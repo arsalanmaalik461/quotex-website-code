@@ -1,0 +1,15 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Keep shop directory untouched
+    RewriteCond %{REQUEST_URI} ^/shop [NC]
+    RewriteRule ^ - [L]
+
+    # If an existing file exists in root (e.g. favicon, robots), serve directly
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^ - [L]
+
+    # Send root and all application requests to public folder
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^(.*)$ public/$1 [L,QSA]
+</IfModule>
