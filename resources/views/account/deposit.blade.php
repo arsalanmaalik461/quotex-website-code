@@ -478,6 +478,63 @@ body {
   transition: all 0.15s;
 }
 .btn-submit-qx:hover { background: #00e676; }
+
+/* App Alert Modal — centered in-app popup (replaces native alert()) */
+.app-alert-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.app-alert-box {
+  background: #171d2b;
+  border: 1px solid #28354c;
+  border-radius: 10px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  padding: 28px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  position: relative;
+  color: #ffffff;
+  text-align: center;
+}
+
+.app-alert-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.app-alert-text {
+  color: #7d8ea9;
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin-bottom: 22px;
+}
+
+.app-alert-btn {
+  width: 100%;
+  background: #00c853;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.app-alert-btn:hover {
+  background: #00e676;
+}
 </style>
 @endpush
 
@@ -1008,7 +1065,7 @@ function copyWalletAddress() {
     tempInput.select();
     document.execCommand('copy');
     document.body.removeChild(tempInput);
-    alert('Address copied: ' + address);
+    showAppAlert('Address copied: ' + address);
   });
 }
 
@@ -1039,13 +1096,26 @@ function previewProofImage(input) {
   }
 }
 
+// Centered in-app alert modal (replaces native alert())
+function showAppAlert(msg) {
+  const text = document.getElementById('appAlertText');
+  if (text) text.textContent = msg;
+  const backdrop = document.getElementById('appAlertBackdrop');
+  if (backdrop) backdrop.style.display = 'flex';
+}
+
+function closeAppAlert() {
+  const backdrop = document.getElementById('appAlertBackdrop');
+  if (backdrop) backdrop.style.display = 'none';
+}
+
 // Validation: Require either Transaction ID or proof image screenshot
 document.getElementById('depositForm')?.addEventListener('submit', function(e) {
   if (currentMethodData && currentMethodData.provider === 'lgpay') {
     const amt = parseFloat(document.getElementById('deposit-amount-input').value) || 0;
     if (amt < parseFloat(currentMethodData.min_amount || 0) || (currentMethodData.max_amount && amt > parseFloat(currentMethodData.max_amount))) {
       e.preventDefault();
-      alert('Please enter an amount within the allowed limits.');
+      showAppAlert('Please enter an amount within the allowed limits.');
       return false;
     }
 
@@ -1061,7 +1131,7 @@ document.getElementById('depositForm')?.addEventListener('submit', function(e) {
 
   if (!txnId && !hasFile) {
     e.preventDefault();
-    alert('Please enter your Transaction ID OR upload a payment receipt screenshot.');
+    showAppAlert('Please enter your Transaction ID OR upload a payment receipt screenshot.');
     return false;
   }
 
@@ -1071,5 +1141,14 @@ document.getElementById('depositForm')?.addEventListener('submit', function(e) {
 });
 </script>
 @endpush
+
+<!-- App Alert Modal (centered in-app popup, replaces native alert()) -->
+<div class="app-alert-backdrop" id="appAlertBackdrop" onclick="if (event.target === this) closeAppAlert()">
+  <div class="app-alert-box" onclick="event.stopPropagation()">
+    <div class="app-alert-title">Notice</div>
+    <div class="app-alert-text" id="appAlertText"></div>
+    <button type="button" class="app-alert-btn" onclick="closeAppAlert()">OK</button>
+  </div>
+</div>
 
 @endsection

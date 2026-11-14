@@ -7,6 +7,7 @@ use App\Http\Controllers\TradeController;
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\KycController;
 use App\Http\Controllers\LGPayController;
+use App\Http\Controllers\TournamentRegistrationController;
 use Illuminate\Support\Facades\Route;
 
 // TEMP: One-time admin creation route - DELETE AFTER USE
@@ -68,7 +69,11 @@ Route::middleware('auth')->group(function () {
     Route::get('/settings', [AccountController::class, 'profile'])->name('settings');
     Route::get('/en/settings', [AccountController::class, 'profile'])->name('settings.en');
     Route::post('/profile', [AccountController::class, 'updateProfile'])->name('profile.update');
+    Route::delete('/profile', [AccountController::class, 'deleteAccount'])->name('profile.delete');
+    Route::post('/profile/2fa', [AccountController::class, 'updateTwoFactor'])->name('profile.two-factor');
+    Route::post('/profile/resend-verification', [AccountController::class, 'resendVerificationEmail'])->name('profile.resend-verification');
 });
+Route::get('/email/verify/{id}/{hash}', [AccountController::class, 'verifyEmail'])->name('verification.verify')->middleware('signed');
 Route::get('/profile/images/{any}', function ($any) {
     $path = public_path('images/' . $any);
     if (file_exists($path)) {
@@ -87,6 +92,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/en/tournaments', [AccountController::class, 'tournaments'])->name('tournaments.en');
     Route::get('/tournament/{tournament}', [AccountController::class, 'tournamentDetail'])->name('tournament.detail');
     Route::get('/en/tournament/{tournament}', [AccountController::class, 'tournamentDetail'])->name('tournament.detail.en');
+    Route::post('/tournament/{tournament}/register', [TournamentRegistrationController::class, 'register'])->name('tournament.register');
 
     Route::get('/analytics', [AccountController::class, 'analytics'])->name('analytics');
     Route::get('/en/analytics', [AccountController::class, 'analytics'])->name('analytics.en');

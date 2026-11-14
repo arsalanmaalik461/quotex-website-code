@@ -120,7 +120,7 @@
 <div class="mode-panel">
     <div>
         <div class="mode-panel-title">Global Trade Result Mode</div>
-        <div class="mode-panel-sub" id="modeHint">Normal follows market. Win/Loss applies to every new trade while active.</div>
+        <div class="mode-panel-sub" id="modeHint">Normal follows market. Win/Loss applies to new trades and to running trades too: the market keeps following its trend, then in the last 3 seconds it glides to your Win/Loss result.</div>
     </div>
     <div class="mode-toggle-group" id="tradeModeButtons" data-mode="{{ $tradeMode }}">
         <button type="button" class="mode-toggle" data-mode="normal" onclick="setTradeMode('normal')">Normal</button>
@@ -272,8 +272,8 @@ function createRow(trade) {
 
     el.innerHTML = `
         <div class="user-info">
-            <div class="name">${trade.user_name}</div>
-            <div class="sub">$${trade.user_balance} · ${trade.account_age}d old · ${trade.total_trades} trades</div>
+            <div class="name">${trade.user_name} <span class="badge-status ${trade.account_type === 'demo' ? 'blue' : 'green'}" style="font-size:10px;padding:2px 6px">${trade.account_type === 'demo' ? 'DEMO' : 'LIVE'}</span></div>
+            <div class="sub">$${trade.user_balance} · ${trade.account_age}d old · ${trade.total_trades} trades${trade.account_type === 'demo' && trade.demo_cycle ? ' · Demo ' + trade.demo_cycle : ''}</div>
         </div>
         <div style="font-weight:600;color:var(--text-primary)">${trade.asset_symbol}</div>
         <div><span class="badge-status ${dirClass}">${dirIcon}</span></div>

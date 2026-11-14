@@ -432,6 +432,112 @@
   .faq-tournaments-item.open .faq-tournaments-item__answer {
     display: block;
   }
+
+  /* Join Tournament Confirm Modal — centered in-app popup (same look as the
+     tournaments list modal: .qx-modal-backdrop / .qx-modal-content) */
+  .qx-modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+
+  .qx-modal-content {
+    background: #171d2b;
+    border: 1px solid #28354c;
+    border-radius: 10px;
+    width: 420px;
+    max-width: calc(100vw - 32px);
+    padding: 28px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    position: relative;
+    color: #ffffff;
+    text-align: center;
+  }
+
+  .qx-modal-close {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    background: none;
+    border: none;
+    color: #63738e;
+    font-size: 24px;
+    cursor: pointer;
+    line-height: 1;
+  }
+
+  .qx-modal-close:hover {
+    color: #ffffff;
+  }
+
+  .qx-modal-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    padding-right: 24px;
+  }
+
+  .qx-modal-text {
+    color: #7d8ea9;
+    font-size: 13.5px;
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+
+  .qx-modal-text b {
+    color: #ffffff;
+  }
+
+  .qx-modal-actions {
+    display: flex;
+    gap: 10px;
+  }
+
+  .qx-modal-btn-confirm {
+    flex: 1;
+    background: #00c853;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 13px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .qx-modal-btn-confirm:hover {
+    background: #00e676;
+  }
+
+  .qx-modal-btn-cancel {
+    flex: 1;
+    background: #232c3f;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 13px;
+    border: 1px solid #28354c;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .qx-modal-btn-cancel:hover {
+    background: #2b364e;
+  }
+
+  .qx-modal-success-icon {
+    font-size: 44px;
+    line-height: 1;
+    margin-bottom: 14px;
+  }
 </style>
 @endpush
 
@@ -474,13 +580,13 @@
               </div>
 
               @if($tournament->entry_fee > 0)
-                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', '{{ number_format($tournament->entry_fee, 0) }}$')">
+                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', '{{ number_format($tournament->entry_fee, 0) }}$', {{ $tournament->id }})">
                   <span class="oQ4Z4">
                     Join now — {{ number_format($tournament->entry_fee, 0, '.', '') }}$
                   </span>
                 </button>
               @else
-                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', 'Free')">
+                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', 'Free', {{ $tournament->id }})">
                   <span class="oQ4Z4">
                     Join now — Free
                   </span>
@@ -704,15 +810,75 @@
   </div>
 </div>
 
+<!-- Join Tournament Confirm Modal (centered in-app popup, replaces native confirm()/alert()) -->
+<div class="qx-modal-backdrop" id="join-modal" onclick="if (event.target === this) closeJoinTournamentModal()">
+  <div class="qx-modal-content" onclick="event.stopPropagation()">
+    <button type="button" class="qx-modal-close" onclick="closeJoinTournamentModal()">&times;</button>
+    <div id="join-modal-confirm">
+      <div class="qx-modal-title">Join Tournament</div>
+      <div class="qx-modal-text">Do you want to register for <b id="join-modal-title"></b> with entry fee <b id="join-modal-fee"></b>?</div>
+      <div class="qx-modal-actions">
+        <button type="button" class="qx-modal-btn-cancel" onclick="closeJoinTournamentModal()">Cancel</button>
+        <button type="button" class="qx-modal-btn-confirm" onclick="confirmJoinTournament()">OK, Register</button>
+      </div>
+    </div>
+    <div id="join-modal-success" style="display: none;">
+      <div class="qx-modal-success-icon">✓</div>
+      <div class="qx-modal-title">Registration Submitted</div>
+      <div class="qx-modal-text" id="join-modal-success-text"></div>
+      <div class="qx-modal-actions">
+        <button type="button" class="qx-modal-btn-cancel" onclick="closeJoinTournamentModal()">Close</button>
+        <a href="{{ route('trade') }}" class="qx-modal-btn-confirm" style="flex: 1; display: flex; align-items: center; justify-content: center; text-decoration: none;">Go to Trade</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
   function toggleFaq(el) {
     el.classList.toggle('open');
   }
 
-  function joinTournamentModal(title, fee) {
-    if (confirm(`Do you want to register for ${title} with entry fee ${fee}?`)) {
-      alert(`Registration request submitted for ${title}! Good luck with your trading!`);
-    }
+  let joinTournamentTitle = '';
+  let joinTournamentFee = '';
+  let joinTournamentId = null;
+
+  function joinTournamentModal(title, fee, id) {
+    joinTournamentTitle = title;
+    joinTournamentFee = fee;
+    joinTournamentId = id;
+    document.getElementById('join-modal-title').textContent = title;
+    document.getElementById('join-modal-fee').textContent = fee;
+    document.getElementById('join-modal-confirm').style.display = 'block';
+    document.getElementById('join-modal-success').style.display = 'none';
+    document.getElementById('join-modal').style.display = 'flex';
+  }
+
+  function closeJoinTournamentModal() {
+    document.getElementById('join-modal').style.display = 'none';
+  }
+
+  function confirmJoinTournament() {
+    const btn = document.querySelector('#join-modal-confirm .qx-modal-btn-confirm');
+    if (btn) btn.disabled = true;
+    fetch('/tournament/' + joinTournamentId + '/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({}),
+    })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.message || 'Registration failed. Please try again.');
+      document.getElementById('join-modal-success-text').textContent = data.message;
+      document.getElementById('join-modal-confirm').style.display = 'none';
+      document.getElementById('join-modal-success').style.display = 'block';
+    })
+    .catch((err) => {
+      const text = document.querySelector('#join-modal-confirm .qx-modal-text');
+      if (text) { text.textContent = err.message; text.style.color = '#ff6b6b'; }
+    })
+    .finally(() => { if (btn) btn.disabled = false; });
   }
 </script>
 @endsection

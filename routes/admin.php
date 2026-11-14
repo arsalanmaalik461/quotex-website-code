@@ -140,6 +140,7 @@ Route::prefix('admin')->name('admin.')->middleware(['web', 'auth', 'admin'])->gr
         Route::get('/create', [AdminTournamentController::class, 'create'])->name('create');
         Route::post('/', [AdminTournamentController::class, 'store'])->name('store');
         Route::get('/{tournament}/edit', [AdminTournamentController::class, 'edit'])->name('edit');
+        Route::get('/{tournament}', [AdminTournamentController::class, 'show'])->name('show');
         Route::put('/{tournament}', [AdminTournamentController::class, 'update'])->name('update');
         Route::delete('/{tournament}', [AdminTournamentController::class, 'destroy'])->name('destroy');
         Route::post('/{tournament}/toggle', [AdminTournamentController::class, 'toggle'])->name('toggle');

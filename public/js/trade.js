@@ -119,11 +119,33 @@
     accountType: 'demo',
     balance: 10000,
     oneClick: true,
-    indicators: { sma: false, ema: false, bollinger: false },
+    indicators: { sma: false, ema: false, bollinger: false, rsi: false },
     smaSeries: null,
     emaSeries: null,
     bbUpperSeries: null,
     bbLowerSeries: null,
+    rsiSeries: null,
+    rsiUpperSeries: null,
+    rsiLowerSeries: null,
+    // --- User settings (theme, platform toggles, colours) — persisted in localStorage ---
+    settings: {
+      theme: 'night',
+      gridOpacity: 8,
+      autoScroll: true,
+      oneClick: true,
+      performanceMode: true,
+      shortOrderLabel: false,
+      hideResults: false,
+      upColor: '#00c853',
+      downColor: '#ff3b53',
+      chartBg: null,
+      sound: true,
+    },
+    _indSig: null,
+    _forceFitNext: false,
+    drawings: [],
+    drawingTool: null,
+    drawingPoints: [],
     chartMarkers: [],
     pendingPriceLine: null,
   };
@@ -369,7 +391,10 @@
     }
 
     renderTabs();
+    applySavedSettings();
     initChart();
+    loadDrawings();
+    renderDrawings();
     loadPriceData();
     bindEvents();
     startPriceEngine();
@@ -565,6 +590,8 @@
     state.candles = [];
     state.currentPrice = chosenAsset.base;
     loadPriceData();
+    loadDrawings();
+    renderDrawings();
     connectLiveCryptoStream(chosenAsset.symbol);
     updatePayoutCalculation();
     el.assetPanel?.classList.remove('open');
@@ -577,23 +604,24 @@
     const chartEl = document.getElementById('trade-chart');
     if (!chartEl || !window.LightweightCharts) return;
 
+    const themeColors = chartThemeColors(state.settings.theme);
     state.chart = LightweightCharts.createChart(chartEl, {
       layout: {
-        background: { color: '#1c1f2d' },
-        textColor: '#8e9aa8',
+        background: { color: state.settings.chartBg ? 'transparent' : themeColors.bg },
+        textColor: themeColors.text,
         fontFamily: "'Inter', sans-serif",
         fontSize: 10,
       },
       grid: {
-        vertLines: { color: '#242a3c' },
-        horzLines: { color: '#242a3c' },
+        vertLines: { color: gridColor() },
+        horzLines: { color: gridColor() },
       },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
       },
       rightPriceScale: {
-        borderColor: '#293246',
-        textColor: '#8e9aa8',
+        borderColor: themeColors.border,
+        textColor: themeColors.text,
         autoScale: true,
         scaleMargins: {
           top: 0.16,
@@ -602,7 +630,7 @@
         alignLabels: true,
       },
       timeScale: {
-        borderColor: '#293246',
+        borderColor: themeColors.border,
         timeVisible: true,
         secondsVisible: state.timeframeSec <= 60,
       },
@@ -614,6 +642,7 @@
     if (state.chart.timeScale) {
       state.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
         updateChartTradesOverlay();
+        renderDrawings();
         if (range && range.from < 25 && !isLoadingHistory && state.candles.length > 0) {
           const oldestCandle = state.candles[0];
           if (oldestCandle && oldestCandle.time) {
@@ -633,7 +662,7 @@
       }
     });
     resizeObserver.observe(chartEl);
-    window.addEventListener('resize', () => updateChartTradesOverlay());
+    window.addEventListener('resize', () => { updateChartTradesOverlay(); renderDrawings(); });
   }
 
   function createSeries() {
@@ -642,6 +671,16 @@
       try { state.chart.removeSeries(state.series); } catch (e) {}
       state.series = null;
     }
+    // Indicator series belong to the old main series: drop them here so
+    // updateIndicators() recreates them on the fresh series instead of
+    // leaving stale lines (or losing them) after an asset / chart-type
+    // / timeframe switch.
+    [state.smaSeries, state.emaSeries, state.bbUpperSeries, state.bbLowerSeries, state.rsiSeries, state.rsiUpperSeries, state.rsiLowerSeries].forEach(s => {
+      if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+    });
+    state.smaSeries = state.emaSeries = state.bbUpperSeries = state.bbLowerSeries = null;
+    state.rsiSeries = state.rsiUpperSeries = state.rsiLowerSeries = null;
+    state._indSig = null;
 
     const baseVal = state.selectedAsset ? Number(state.selectedAsset.base) : 1.0;
     const prec = getPrecision(baseVal);
@@ -659,20 +698,20 @@
     if (state.chartType === 'area') {
       state.series = state.chart.addAreaSeries({
         ...commonSeriesOpts,
-        topColor: 'rgba(16, 160, 85, 0.35)',
-        bottomColor: 'rgba(16, 160, 85, 0.0)',
-        lineColor: '#10a055',
+        topColor: hexToRgba(state.settings.upColor, 0.35),
+        bottomColor: hexToRgba(state.settings.upColor, 0.0),
+        lineColor: state.settings.upColor,
         lineWidth: 2,
       });
     } else {
       state.series = state.chart.addCandlestickSeries({
         ...commonSeriesOpts,
-        upColor: '#10a055',
-        downColor: '#e85b4e',
-        borderUpColor: '#10a055',
-        borderDownColor: '#e85b4e',
-        wickUpColor: '#10a055',
-        wickDownColor: '#e85b4e',
+        upColor: state.settings.upColor,
+        downColor: state.settings.downColor,
+        borderUpColor: state.settings.upColor,
+        borderDownColor: state.settings.downColor,
+        wickUpColor: state.settings.upColor,
+        wickDownColor: state.settings.downColor,
       });
     }
 
@@ -870,6 +909,10 @@
 
   // --- Load Candles & Price Engine ---
   function loadPriceData(isPrepend = false, customEndTime = null) {
+    // A fresh asset / timeframe load always fits the newest candles once,
+    // even when Auto-scrolling is off (that setting only stops the
+    // automatic re-scroll on later live refreshes).
+    if (!isPrepend) state._forceFitNext = true;
     const symbol = state.selectedAsset ? state.selectedAsset.symbol : 'EUR/USD (OTC)';
     const assetId = state.selectedAsset ? state.selectedAsset.id : 1;
     const reqCount = isPrepend ? 500 : getSmartCandleCount(state.timeframeSec);
@@ -1032,9 +1075,10 @@
     } else {
       state.series.setData(state.candles);
     }
-    if (shouldFit) {
+    if (shouldFit && (state.settings.autoScroll || state._forceFitNext)) {
       applyDefaultVisibleRange();
     }
+    state._forceFitNext = false;
     try {
       state.chart.priceScale('right').applyOptions({ autoScale: true });
     } catch (e) {}
@@ -1044,6 +1088,27 @@
   // --- Technical Indicators Computation (SMA, EMA, Bollinger Bands) ---
   function updateIndicators() {
     if (!state.chart || !state.candles.length) return;
+
+    // Performance Mode (on by default): indicator values only change when a
+    // new candle starts or a toggle changes. Skip the full recompute on
+    // every live tick while the newest candle is still forming; with
+    // Performance Mode off, recompute on every refresh (live values).
+    const lastCandle = state.candles[state.candles.length - 1];
+    const indSig = [
+      state.indicators.sma, state.indicators.ema, state.indicators.bollinger, state.indicators.rsi,
+      state.candles.length, lastCandle.time,
+    ].join('|');
+    const seriesReady =
+      (!state.indicators.sma || state.smaSeries) &&
+      (!state.indicators.ema || state.emaSeries) &&
+      (!state.indicators.bollinger || (state.bbUpperSeries && state.bbLowerSeries)) &&
+      (!state.indicators.rsi || (state.rsiSeries && state.rsiUpperSeries && state.rsiLowerSeries));
+    if (state.settings.performanceMode && indSig === state._indSig && seriesReady) return;
+    state._indSig = indSig;
+
+    // Indicator values use the asset's own precision (BTC: 2, EUR/USD: 5).
+    const prec = getPrecision(lastCandle.close);
+    const legendParts = [];
 
     // 1. SMA (10)
     if (state.indicators.sma) {
@@ -1059,9 +1124,10 @@
       for (let i = period - 1; i < state.candles.length; i++) {
         let sum = 0;
         for (let j = 0; j < period; j++) sum += state.candles[i - j].close;
-        smaData.push({ time: state.candles[i].time, value: +(sum / period).toFixed(5) });
+        smaData.push({ time: state.candles[i].time, value: +(sum / period).toFixed(prec) });
       }
       state.smaSeries.setData(smaData);
+      if (smaData.length) legendParts.push(`<span style="color:#2962ff">SMA 10 ${smaData[smaData.length - 1].value.toFixed(prec)}</span>`);
     } else if (state.smaSeries) {
       state.chart.removeSeries(state.smaSeries);
       state.smaSeries = null;
@@ -1083,14 +1149,15 @@
         let prevEma = 0;
         for (let i = 0; i < period; i++) prevEma += state.candles[i].close;
         prevEma /= period;
-        emaData.push({ time: state.candles[period - 1].time, value: +prevEma.toFixed(5) });
+        emaData.push({ time: state.candles[period - 1].time, value: +prevEma.toFixed(prec) });
         for (let i = period; i < state.candles.length; i++) {
           const ema = (state.candles[i].close - prevEma) * k + prevEma;
-          emaData.push({ time: state.candles[i].time, value: +ema.toFixed(5) });
+          emaData.push({ time: state.candles[i].time, value: +ema.toFixed(prec) });
           prevEma = ema;
         }
       }
       state.emaSeries.setData(emaData);
+      if (emaData.length) legendParts.push(`<span style="color:#ffd600">EMA 20 ${emaData[emaData.length - 1].value.toFixed(prec)}</span>`);
     } else if (state.emaSeries) {
       state.chart.removeSeries(state.emaSeries);
       state.emaSeries = null;
@@ -1125,12 +1192,13 @@
           let variance = 0;
           for (let j = 0; j < period; j++) variance += Math.pow(state.candles[i - j].close - mean, 2);
           const stdDev = Math.sqrt(variance / period);
-          upperData.push({ time: state.candles[i].time, value: +(mean + 2 * stdDev).toFixed(5) });
-          lowerData.push({ time: state.candles[i].time, value: +(mean - 2 * stdDev).toFixed(5) });
+          upperData.push({ time: state.candles[i].time, value: +(mean + 2 * stdDev).toFixed(prec) });
+          lowerData.push({ time: state.candles[i].time, value: +(mean - 2 * stdDev).toFixed(prec) });
         }
       }
       state.bbUpperSeries.setData(upperData);
       state.bbLowerSeries.setData(lowerData);
+      if (upperData.length) legendParts.push(`<span style="color:#00e5ff">BB ${lowerData[lowerData.length - 1].value.toFixed(prec)} – ${upperData[upperData.length - 1].value.toFixed(prec)}</span>`);
     } else {
       if (state.bbUpperSeries) {
         state.chart.removeSeries(state.bbUpperSeries);
@@ -1141,7 +1209,336 @@
         state.bbLowerSeries = null;
       }
     }
+
+    // 4. RSI (14) — own scale at the bottom of the chart, with 70 / 30
+    // overbought / oversold reference lines.
+    if (state.indicators.rsi) {
+      if (!state.rsiSeries) {
+        state.rsiSeries = state.chart.addLineSeries({
+          color: '#ff9800',
+          lineWidth: 2,
+          title: 'RSI 14',
+          priceScaleId: 'rsi',
+        });
+        try {
+          state.chart.priceScale('rsi').applyOptions({ scaleMargins: { top: 0.78, bottom: 0.02 } });
+        } catch (e) {}
+      }
+      if (!state.rsiUpperSeries) {
+        state.rsiUpperSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'RSI 70',
+          priceScaleId: 'rsi',
+        });
+      }
+      if (!state.rsiLowerSeries) {
+        state.rsiLowerSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'RSI 30',
+          priceScaleId: 'rsi',
+        });
+      }
+      const period = 14;
+      const rsiData = [];
+      const upperRef = [];
+      const lowerRef = [];
+      if (state.candles.length > period) {
+        let gainSum = 0;
+        let lossSum = 0;
+        for (let i = 1; i <= period; i++) {
+          const diff = state.candles[i].close - state.candles[i - 1].close;
+          if (diff >= 0) gainSum += diff; else lossSum -= diff;
+        }
+        let avgGain = gainSum / period;
+        let avgLoss = lossSum / period;
+        const pushRsi = (time, g, l) => {
+          const rs = l === 0 ? (g === 0 ? 1 : Infinity) : g / l;
+          rsiData.push({ time, value: +(100 - 100 / (1 + rs)).toFixed(2) });
+        };
+        pushRsi(state.candles[period].time, avgGain, avgLoss);
+        for (let i = period + 1; i < state.candles.length; i++) {
+          const diff = state.candles[i].close - state.candles[i - 1].close;
+          const gain = Math.max(diff, 0);
+          const loss = Math.max(-diff, 0);
+          avgGain = (avgGain * (period - 1) + gain) / period;
+          avgLoss = (avgLoss * (period - 1) + loss) / period;
+          pushRsi(state.candles[i].time, avgGain, avgLoss);
+        }
+      }
+      rsiData.forEach(p => { upperRef.push({ time: p.time, value: 70 }); lowerRef.push({ time: p.time, value: 30 }); });
+      state.rsiSeries.setData(rsiData);
+      state.rsiUpperSeries.setData(upperRef);
+      state.rsiLowerSeries.setData(lowerRef);
+      if (rsiData.length) legendParts.push(`<span style="color:#ff9800">RSI 14 ${rsiData[rsiData.length - 1].value.toFixed(2)}</span>`);
+    } else {
+      [state.rsiSeries, state.rsiUpperSeries, state.rsiLowerSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.rsiSeries = state.rsiUpperSeries = state.rsiLowerSeries = null;
+    }
+
+    // Small legend (top-left of the chart) showing the live value of every
+    // enabled indicator, so the indicators are visible at a glance.
+    const legendEl = document.getElementById('indicators-legend');
+    if (legendEl) {
+      legendEl.innerHTML = legendParts.join(' &nbsp; ');
+      legendEl.style.display = legendParts.length ? 'flex' : 'none';
+    }
   }
+
+  // --- Trade settings (theme, platform toggles, graph colours) ---
+  const THEME_COLORS = {
+    night: { bg: '#1c1f2d', text: '#8e9aa8', gridBase: '#242a3c', border: '#293246' },
+    twilight: { bg: '#232742', text: '#9aa3c0', gridBase: '#35406b', border: '#353b5e' },
+    light: { bg: '#ffffff', text: '#5a6b7f', gridBase: '#e5e9f0', border: '#d5dce6' },
+  };
+
+  function chartThemeColors(theme) {
+    return THEME_COLORS[theme] || THEME_COLORS.night;
+  }
+
+  function hexToRgba(hex, alpha) {
+    const h = String(hex || '').replace('#', '');
+    if (h.length !== 6) return `rgba(36, 42, 60, ${alpha})`;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function gridColor() {
+    const base = chartThemeColors(state.settings.theme).gridBase;
+    const op = Math.max(0, Math.min(10, state.settings.gridOpacity || 0)) / 10;
+    return hexToRgba(base, op);
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem('qx-trade-settings', JSON.stringify(state.settings)); } catch (e) {}
+  }
+
+  function applySavedSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('qx-trade-settings') || '{}');
+      if (saved && typeof saved === 'object') {
+        if (['light', 'twilight', 'night'].includes(saved.theme)) state.settings.theme = saved.theme;
+        if (typeof saved.gridOpacity === 'number') state.settings.gridOpacity = Math.max(0, Math.min(10, saved.gridOpacity));
+        ['autoScroll', 'oneClick', 'performanceMode', 'shortOrderLabel', 'hideResults', 'sound'].forEach(k => {
+          if (typeof saved[k] === 'boolean') state.settings[k] = saved[k];
+        });
+        if (typeof saved.upColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(saved.upColor)) state.settings.upColor = saved.upColor;
+        if (typeof saved.downColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(saved.downColor)) state.settings.downColor = saved.downColor;
+        if (typeof saved.chartBg === 'string' && saved.chartBg.startsWith('data:image')) state.settings.chartBg = saved.chartBg;
+      }
+    } catch (e) {}
+    state.oneClick = state.settings.oneClick;
+    soundContext.enabled = state.settings.sound;
+    applyTheme(state.settings.theme, { save: false });
+    applySettingsToUI();
+  }
+
+  function applyTheme(name, opts = {}) {
+    const theme = ['light', 'twilight', 'night'].includes(name) ? name : 'night';
+    state.settings.theme = theme;
+    document.documentElement.dataset.theme = theme;
+    document.querySelectorAll('input[name="theme_template"]').forEach(r => { r.checked = (r.value === theme); });
+    applyChartColors();
+    applyChartBackground();
+    if (opts.save !== false) saveSettings();
+  }
+
+  function applyChartColors() {
+    if (!state.chart) return;
+    const colors = chartThemeColors(state.settings.theme);
+    state.chart.applyOptions({
+      layout: {
+        background: { color: state.settings.chartBg ? 'transparent' : colors.bg },
+        textColor: colors.text,
+      },
+      grid: {
+        vertLines: { color: gridColor() },
+        horzLines: { color: gridColor() },
+      },
+      rightPriceScale: { borderColor: colors.border, textColor: colors.text },
+      timeScale: { borderColor: colors.border },
+    });
+    if (state.series) {
+      try {
+        if (state.chartType === 'area') {
+          state.series.applyOptions({
+            lineColor: state.settings.upColor,
+            topColor: hexToRgba(state.settings.upColor, 0.35),
+            bottomColor: hexToRgba(state.settings.upColor, 0.0),
+          });
+        } else {
+          state.series.applyOptions({
+            upColor: state.settings.upColor,
+            downColor: state.settings.downColor,
+            borderUpColor: state.settings.upColor,
+            borderDownColor: state.settings.downColor,
+            wickUpColor: state.settings.upColor,
+            wickDownColor: state.settings.downColor,
+          });
+        }
+      } catch (e) {}
+    }
+  }
+
+  function applyChartBackground() {
+    const area = document.getElementById('chart-area-container');
+    if (!area) return;
+    if (state.settings.chartBg) {
+      area.style.backgroundImage = `url(${state.settings.chartBg})`;
+      area.style.backgroundSize = 'cover';
+      area.style.backgroundPosition = 'center';
+    } else {
+      area.style.backgroundImage = '';
+    }
+    const removeBtn = document.getElementById('btn-remove-chart-bg');
+    if (removeBtn) removeBtn.style.display = state.settings.chartBg ? 'inline-block' : 'none';
+    if (state.chart) {
+      const colors = chartThemeColors(state.settings.theme);
+      state.chart.applyOptions({ layout: { background: { color: state.settings.chartBg ? 'transparent' : colors.bg } } });
+    }
+  }
+
+  function applyHideResults() {
+    if (!el.closedTradesContainer || !state.settings.hideResults) return;
+    el.closedTradesContainer.style.display = 'none';
+    const historyTab = document.querySelector('.trades-tab[data-tab="history"]');
+    const activeTab = document.querySelector('.trades-tab[data-tab="active"]');
+    if (historyTab && historyTab.classList.contains('active')) {
+      historyTab.classList.remove('active');
+      if (activeTab) activeTab.classList.add('active');
+      if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'block';
+    }
+  }
+
+  function applySettingsToUI() {
+    const setChk = (id, val) => { const c = document.getElementById(id); if (c) c.checked = !!val; };
+    setChk('chk-auto-scroll', state.settings.autoScroll);
+    setChk('chk-one-click', state.settings.oneClick);
+    setChk('chk-performance-mode', state.settings.performanceMode);
+    setChk('chk-short-label', state.settings.shortOrderLabel);
+    setChk('chk-hide-results', state.settings.hideResults);
+    setChk('chk-sound', state.settings.sound);
+    const gridInp = document.getElementById('gridsopacity-val');
+    if (gridInp) gridInp.value = state.settings.gridOpacity;
+    const upInp = document.getElementById('up-trend-color');
+    if (upInp) upInp.value = state.settings.upColor;
+    const downInp = document.getElementById('down-trend-color');
+    if (downInp) downInp.value = state.settings.downColor;
+    document.body.classList.toggle('short-order-labels', state.settings.shortOrderLabel);
+    applyHideResults();
+    applySoundButton();
+  }
+
+  function applySoundButton() {
+    const btn = document.getElementById('btn-toggle-sound');
+    if (!btn) return;
+    btn.classList.toggle('muted', !soundContext.enabled);
+    btn.title = soundContext.enabled ? 'Sound On — click to mute' : 'Sound Off — click to unmute';
+    btn.style.opacity = soundContext.enabled ? '1' : '0.45';
+  }
+
+  window.toggleSound = function () {
+    soundContext.enabled = !soundContext.enabled;
+    state.settings.sound = soundContext.enabled;
+    saveSettings();
+    applySoundButton();
+    const chk = document.getElementById('chk-sound');
+    if (chk) chk.checked = soundContext.enabled;
+  };
+
+  function wireSettingsControls() {
+    document.querySelectorAll('input[name="theme_template"]').forEach(r => {
+      r.addEventListener('change', () => { if (r.checked) applyTheme(r.value); });
+    });
+    const bindChk = (id, key, after) => {
+      const c = document.getElementById(id);
+      if (!c) return;
+      c.addEventListener('change', () => {
+        state.settings[key] = c.checked;
+        saveSettings();
+        if (after) after();
+      });
+    };
+    bindChk('chk-auto-scroll', 'autoScroll');
+    bindChk('chk-one-click', 'oneClick', () => { state.oneClick = state.settings.oneClick; });
+    bindChk('chk-performance-mode', 'performanceMode', () => { state._indSig = null; updateIndicators(); });
+    bindChk('chk-short-label', 'shortOrderLabel', () => {
+      document.body.classList.toggle('short-order-labels', state.settings.shortOrderLabel);
+    });
+    bindChk('chk-hide-results', 'hideResults', applyHideResults);
+    const upInp = document.getElementById('up-trend-color');
+    if (upInp) upInp.addEventListener('input', () => {
+      state.settings.upColor = upInp.value;
+      applyChartColors();
+      saveSettings();
+    });
+    const downInp = document.getElementById('down-trend-color');
+    if (downInp) downInp.addEventListener('input', () => {
+      state.settings.downColor = downInp.value;
+      applyChartColors();
+      saveSettings();
+    });
+  }
+
+  window.handleChartBackgroundUpload = function (input) {
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      showToast('File too large', 'Background image must be under 2 Mb.', 'loss');
+      input.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.settings.chartBg = reader.result;
+      saveSettings();
+      applyChartBackground();
+      showToast('Background updated', 'Your chart background image has been applied.', 'info');
+    };
+    reader.onerror = () => showToast('Upload failed', 'Could not read that image file.', 'loss');
+    reader.readAsDataURL(file);
+    input.value = '';
+  };
+
+  window.removeChartBackground = function () {
+    state.settings.chartBg = null;
+    saveSettings();
+    applyChartBackground();
+  };
+
+  // In-app confirm shown when 1-click trade is OFF (no native confirm()).
+  window.showTradeConfirm = function (direction) {
+    const modal = document.getElementById('trade-confirm-modal');
+    const text = document.getElementById('trade-confirm-text');
+    if (!modal || !text) { doPlaceTrade(direction); return; }
+    let invest = state.investment;
+    if (state.investMode === 'percent') {
+      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
+      invest = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
+    }
+    text.textContent = `${direction === 'up' ? '↑ Buy' : '↓ Sell'} — ${state.selectedAsset?.symbol || ''} · ${invest} $ · ${state.durationSeconds}s`;
+    state._pendingTradeDirection = direction;
+    modal.style.display = 'flex';
+  };
+
+  window.closeTradeConfirm = function () {
+    const modal = document.getElementById('trade-confirm-modal');
+    if (modal) modal.style.display = 'none';
+    state._pendingTradeDirection = null;
+  };
+
+  window.confirmTradePlacement = function () {
+    const dir = state._pendingTradeDirection;
+    closeTradeConfirm();
+    if (dir) doPlaceTrade(dir);
+  };
 
   let livePriceSocket = null;
   function connectLiveCryptoStream(symbol) {
@@ -1313,6 +1710,15 @@
 
   // --- Multi-Trade Placement & Execution ---
   function placeTrade(direction) {
+    // 1-click trade OFF → ask first with the in-app confirm (no native dialog).
+    if (!state.settings.oneClick) {
+      showTradeConfirm(direction);
+      return;
+    }
+    doPlaceTrade(direction);
+  }
+
+  function doPlaceTrade(direction) {
     const assetId = state.selectedAsset ? state.selectedAsset.id : 1;
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
 
@@ -1370,18 +1776,26 @@
         renderActiveTrades();
         updateChartTradesOverlay();
 
-        // Floating Green Deal Opened Toast (Exact Screenshot 4)
-        const toastEl = document.getElementById('chart-trade-toast');
-        const toastText = document.getElementById('toast-trade-text');
-        if (toastEl && toastText) {
-          toastText.textContent = `Trade opened with price: ${formatPrice(data.open_price)} ${state.selectedAsset.symbol}`;
-          toastEl.style.display = 'flex';
-          setTimeout(() => { toastEl.style.display = 'none'; }, 5000);
+        // Stacked "Trade opened" toast (real Quotex): one green toast per
+        // placed trade, stacked on the left of the chart — not a single
+        // reused toast that gets overwritten by the next trade.
+        const toastsBox = document.getElementById('chart-trade-toasts');
+        if (toastsBox) {
+          const t = document.createElement('div');
+          t.className = 'floating-green-toast';
+          t.innerHTML = `
+            <span>Trade opened with price: ${formatPrice(data.open_price)} ${state.selectedAsset.symbol}</span>
+            <button type="button" class="toast-dismiss-btn">✕</button>`;
+          t.querySelector('.toast-dismiss-btn')?.addEventListener('click', () => t.remove());
+          toastsBox.appendChild(t);
+          // Keep the stack from growing forever: max 8 visible, oldest first out.
+          while (toastsBox.children.length > 8) toastsBox.firstChild.remove();
+          setTimeout(() => t.remove(), 8000);
         }
 
         showToast(
           'Deal Placed',
-          `${direction === 'up' ? '↑ UP' : '↓ DOWN'} on ${state.selectedAsset.symbol} for $${investVal}`,
+          `${direction === 'up' ? '↑ Buy' : '↓ Sell'} on ${state.selectedAsset.symbol} for $${investVal}`,
           'info'
         );
       })
@@ -1513,10 +1927,32 @@
     if (overlay) overlay.classList.add('active');
 
     const chartWidth = container.clientWidth || 800;
-    const beginLineEl = document.querySelector('.trade-guide-line.line-begin');
-    const endX = beginLineEl ? beginLineEl.offsetLeft : Math.round(chartWidth * 0.65);
     const now = Date.now();
     let minRemaining = null;
+    // Guide lines follow the real trade times: "Beginning of trade" sits on
+    // the earliest active trade's entry candle, "End of trade" on the
+    // latest expiry. They used to be fixed at 65% / 78% of the chart, which
+    // is why every trade line was drawn in the wrong place.
+    let beginX = null;
+    let endX = null;
+    state.activeTrades.forEach(trade => {
+      if (trade.candleTime) {
+        try {
+          const x = state.chart.timeScale().timeToCoordinate(trade.candleTime);
+          if (x !== null && !isNaN(x)) beginX = beginX === null ? x : Math.min(beginX, x);
+        } catch (e) {}
+      }
+      try {
+        const x = state.chart.timeScale().timeToCoordinate(Math.round(trade.expires_at / 1000));
+        if (x !== null && !isNaN(x)) endX = endX === null ? x : Math.max(endX, x);
+      } catch (e) {}
+    });
+    if (beginX === null) beginX = Math.round(chartWidth * 0.65);
+    if (endX === null || endX <= beginX) endX = Math.min(chartWidth - 8, beginX + 110);
+    const beginLineEl = document.querySelector('.trade-guide-line.line-begin');
+    if (beginLineEl) beginLineEl.style.left = `${Math.round(beginX)}px`;
+    const endLineEl = document.querySelector('.trade-guide-line.line-end');
+    if (endLineEl) endLineEl.style.left = `${Math.round(endX)}px`;
 
     state.activeTrades.forEach(trade => {
       const isWin = (trade.direction === 'up' && state.currentPrice >= trade.open_price) ||
@@ -1555,30 +1991,61 @@
 
       if (y === null || isNaN(y)) {
         item.style.display = 'none';
+        const oldShade = document.getElementById(`chart-trade-shade-${trade.trade_id}`);
+        if (oldShade) oldShade.style.display = 'none';
         return;
       }
       item.style.display = 'flex';
       item.style.top = `${Math.round(y)}px`;
 
-      // Calculate horizontal X start position
+      // Trade zone shading (real Quotex): a Buy tints the chart above the
+      // entry line green, a Sell tints it below the entry line red. The
+      // tint follows the entry price as the chart moves (this function
+      // runs every 250 ms while trades are active) and disappears with
+      // the trade — no active trade, no shading.
+      let shade = document.getElementById(`chart-trade-shade-${trade.trade_id}`);
+      if (!shade) {
+        shade = document.createElement('div');
+        shade.id = `chart-trade-shade-${trade.trade_id}`;
+        container.appendChild(shade);
+      }
+      shade.className = `chart-trade-shade ${trade.direction}`;
+      shade.style.display = 'block';
+      if (trade.direction === 'up') {
+        shade.style.top = '0px';
+        shade.style.bottom = 'auto';
+        shade.style.height = `${Math.max(0, Math.round(y))}px`;
+      } else {
+        shade.style.top = `${Math.round(y)}px`;
+        shade.style.bottom = '0px';
+        shade.style.height = 'auto';
+      }
+      // Horizontal span: from the trade's own entry candle to its expiry.
+      // Never clamp to a fixed guide-line position — that was the bug that
+      // drew every line at 65% of the chart instead of where the trade
+      // was actually taken.
       let startX = null;
       if (trade.candleTime) {
         try {
           startX = state.chart.timeScale().timeToCoordinate(trade.candleTime);
         } catch (e) {}
       }
-
       if (startX === null || isNaN(startX)) {
-        if (!trade.fixedStartX) {
-          trade.fixedStartX = Math.max(30, endX - 110);
-        }
-        startX = trade.fixedStartX;
-      } else {
-        trade.fixedStartX = startX;
+        // Entry candle scrolled out of view: anchor at the newest candle
+        // instead of freezing the line at a fixed pixel.
+        try {
+          startX = state.chart.timeScale().timeToCoordinate(state.candles[state.candles.length - 1].time);
+        } catch (e) {}
       }
-
-      const effectiveStartX = Math.min(startX, endX - 25);
-      const lineLen = Math.max(25, endX - effectiveStartX);
+      let tradeEndX = null;
+      try {
+        tradeEndX = state.chart.timeScale().timeToCoordinate(Math.round(trade.expires_at / 1000));
+      } catch (e) {}
+      if (tradeEndX === null || isNaN(tradeEndX) || tradeEndX <= startX) {
+        tradeEndX = Math.min(chartWidth - 8, (startX || beginX) + 110);
+      }
+      const effectiveStartX = Math.max(0, startX || 0);
+      const lineLen = Math.max(25, Math.min(tradeEndX, chartWidth - 8) - effectiveStartX);
 
       item.style.left = `${Math.round(effectiveStartX)}px`;
 
@@ -1620,7 +2087,380 @@
         el.remove();
       }
     });
+    container.querySelectorAll('.chart-trade-shade').forEach(el => {
+      if (!activeIds.has('chart-trade-' + el.id.replace('chart-trade-shade-', ''))) {
+        el.remove();
+      }
+    });
   }
+
+  // --- Chart Drawings (real Quotex Drawings panel) ---
+  // Drawings are stored as data points {time, price} and rendered onto an
+  // SVG layer over the chart, so they track the chart when it scrolls,
+  // zooms or rescales. They persist per asset in localStorage.
+  const DRAWING_TOOLS = [
+    { key: 'disjoint-channel', label: 'Disjoint Channel', points: 3 },
+    { key: 'vertical-line', label: 'Vertical line', points: 1 },
+    { key: 'arc', label: 'Arc', points: 2 },
+    { key: 'trend-line', label: 'Trend Line', points: 2 },
+    { key: 'flat-top-bottom', label: 'Flat Top/Bottom', points: 2 },
+    { key: 'trend-angle', label: 'Trend Angle', points: 2 },
+    { key: 'pitchfan', label: 'Pitchfan', points: 2 },
+    { key: 'gann-box', label: 'Gann Box', points: 2 },
+    { key: 'parallel-channel', label: 'Parallel Channel', points: 3 },
+    { key: 'fibonacci-fan', label: 'Fibonacci Fan', points: 2 },
+    { key: 'ray', label: 'Ray', points: 2 },
+    { key: 'date-price-range', label: 'Date and Price Range', points: 2 },
+    { key: 'rectangle', label: 'Rectangle', points: 2 },
+    { key: 'pitchfork', label: 'Pitchfork', points: 3 },
+    { key: 'extended-line', label: 'Extended Line', points: 2 },
+    { key: 'horizontal-line', label: 'Horizontal line', points: 1 },
+    { key: 'curve', label: 'Curve', points: 3 },
+    { key: 'cyclic-lines', label: 'Cyclic Lines', points: 2 },
+    { key: 'triangle', label: 'Triangle', points: 3 },
+    { key: 'price-range', label: 'Price Range', points: 2 },
+    { key: 'date-range', label: 'Date Range', points: 2 },
+    { key: 'fibonacci-retracement', label: 'Fibonacci Retracement', points: 2 },
+    { key: 'cross-line', label: 'Cross Line', points: 1 },
+  ];
+  const DRAW_COLOR = '#ffd600';
+  const DRAW_FILL = 'rgba(255, 214, 0, 0.07)';
+
+  function drawingsKey() {
+    return 'qx-drawings-' + (state.selectedAsset ? state.selectedAsset.symbol : 'default');
+  }
+
+  function loadDrawings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(drawingsKey()) || '[]');
+      state.drawings = Array.isArray(saved)
+        ? saved.filter(d => d && d.type && Array.isArray(d.points) && d.points.length > 0)
+        : [];
+    } catch (e) { state.drawings = []; }
+  }
+
+  function saveDrawings() {
+    try { localStorage.setItem(drawingsKey(), JSON.stringify(state.drawings)); } catch (e) {}
+  }
+
+  function drawTimeToX(time) {
+    try { const x = state.chart.timeScale().timeToCoordinate(time); return (x === null || isNaN(x)) ? null : x; } catch (e) { return null; }
+  }
+
+  function drawPriceToY(price) {
+    try { const y = state.series.priceToCoordinate(price); return (y === null || isNaN(y)) ? null : y; } catch (e) { return null; }
+  }
+
+  function drawXY(p) {
+    if (!p) return null;
+    const x = drawTimeToX(p.time);
+    const y = drawPriceToY(p.price);
+    if (x === null || y === null) return null;
+    return { x: +x.toFixed(1), y: +y.toFixed(1) };
+  }
+
+  // Extend a segment through p1->p2 until it hits the chart edges.
+  function extendSegment(p1, p2, W, H, extendLeft, extendRight) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return null;
+    const inRect = (t) => {
+      const x = p1.x + dx * t, y = p1.y + dy * t;
+      return x >= -1 && x <= W + 1 && y >= -1 && y <= H + 1;
+    };
+    let t0 = 0, t1 = 1;
+    if (extendLeft) {
+      let best = null;
+      [0, W].forEach(x => { if (dx !== 0) { const t = (x - p1.x) / dx; if (t < 0 && inRect(t) && (best === null || t > best)) best = t; } });
+      [0, H].forEach(y => { if (dy !== 0) { const t = (y - p1.y) / dy; if (t < 0 && inRect(t) && (best === null || t > best)) best = t; } });
+      if (best !== null) t0 = best;
+    }
+    if (extendRight) {
+      let best = null;
+      [0, W].forEach(x => { if (dx !== 0) { const t = (x - p1.x) / dx; if (t > 1 && inRect(t) && (best === null || t < best)) best = t; } });
+      [0, H].forEach(y => { if (dy !== 0) { const t = (y - p1.y) / dy; if (t > 1 && inRect(t) && (best === null || t < best)) best = t; } });
+      if (best !== null) t1 = best;
+    }
+    return {
+      x1: +(p1.x + dx * t0).toFixed(1), y1: +(p1.y + dy * t0).toFixed(1),
+      x2: +(p1.x + dx * t1).toFixed(1), y2: +(p1.y + dy * t1).toFixed(1),
+    };
+  }
+
+  function svgLine(x1, y1, x2, y2, dashed) {
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${DRAW_COLOR}" stroke-width="1.5" ${dashed ? 'stroke-dasharray="5,4"' : ''} />`;
+  }
+
+  function svgText(x, y, txt) {
+    const safe = String(txt).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    return `<text x="${x}" y="${y}" fill="#ffffff" font-size="10" font-weight="600" style="paint-order:stroke" stroke="#141724" stroke-width="3">${safe}</text>`;
+  }
+
+  function drawingToSvg(d, W, H) {
+    const pts = (d.points || []).map(drawXY);
+    const need = (DRAWING_TOOLS.find(t => t.key === d.type) || {}).points || 2;
+    if (pts.length < need || pts.some(p => p === null)) {
+      if (!(d.points.length === 1 && (d.type === 'horizontal-line' || d.type === 'vertical-line' || d.type === 'cross-line'))) return '';
+    }
+    const A = pts[0], B = pts[1], Cc = pts[2];
+    switch (d.type) {
+      case 'trend-line':
+        return svgLine(A.x, A.y, B.x, B.y);
+      case 'extended-line': {
+        const s = extendSegment(A, B, W, H, true, true);
+        return s ? svgLine(s.x1, s.y1, s.x2, s.y2) : '';
+      }
+      case 'ray': {
+        const s = extendSegment(A, B, W, H, false, true);
+        return s ? svgLine(s.x1, s.y1, s.x2, s.y2) : '';
+      }
+      case 'trend-angle': {
+        const s = extendSegment(A, B, W, H, false, true);
+        if (!s) return '';
+        const angle = Math.abs(Math.atan2(B.y - A.y, B.x - A.x) * 180 / Math.PI).toFixed(1);
+        return svgLine(s.x1, s.y1, s.x2, s.y2) + svgText(A.x + 6, A.y - 6, angle + '°');
+      }
+      case 'horizontal-line': {
+        const y = drawPriceToY(d.points[0].price);
+        return y === null ? '' : svgLine(0, y, W, y);
+      }
+      case 'vertical-line': {
+        const x = drawTimeToX(d.points[0].time);
+        return x === null ? '' : svgLine(x, 0, x, H);
+      }
+      case 'cross-line': {
+        const x = drawTimeToX(d.points[0].time);
+        const y = drawPriceToY(d.points[0].price);
+        if (x === null || y === null) return '';
+        return svgLine(x, 0, x, H, true) + svgLine(0, y, W, y, true);
+      }
+      case 'rectangle':
+        return `<rect x="${Math.min(A.x, B.x)}" y="${Math.min(A.y, B.y)}" width="${Math.abs(B.x - A.x)}" height="${Math.abs(B.y - A.y)}" fill="${DRAW_FILL}" stroke="${DRAW_COLOR}" stroke-width="1.5" />`;
+      case 'triangle':
+        return `<polygon points="${A.x},${A.y} ${B.x},${B.y} ${Cc.x},${Cc.y}" fill="${DRAW_FILL}" stroke="${DRAW_COLOR}" stroke-width="1.5" />`;
+      case 'arc': {
+        const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+        const dx = B.x - A.x, dy = B.y - A.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const cx = mx - dy / len * len * 0.25, cy = my + dx / len * len * 0.25;
+        return `<path d="M ${A.x} ${A.y} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${B.x} ${B.y}" fill="none" stroke="${DRAW_COLOR}" stroke-width="1.5" />`;
+      }
+      case 'curve':
+        return `<path d="M ${A.x} ${A.y} Q ${B.x} ${B.y} ${Cc.x} ${Cc.y}" fill="none" stroke="${DRAW_COLOR}" stroke-width="1.5" />`;
+      case 'parallel-channel': {
+        const s1 = extendSegment(A, B, W, H, true, true);
+        const s2 = extendSegment(Cc, { x: Cc.x + (B.x - A.x), y: Cc.y + (B.y - A.y) }, W, H, true, true);
+        return (s1 ? svgLine(s1.x1, s1.y1, s1.x2, s1.y2) : '') + (s2 ? svgLine(s2.x1, s2.y1, s2.x2, s2.y2) : '');
+      }
+      case 'disjoint-channel':
+        return svgLine(A.x, A.y, B.x, B.y) + svgLine(Cc.x, Cc.y, Cc.x + (B.x - A.x), Cc.y + (B.y - A.y));
+      case 'flat-top-bottom':
+        return svgLine(0, A.y, W, A.y) + svgLine(0, B.y, W, B.y);
+      case 'pitchfan':
+      case 'fibonacci-fan': {
+        const ratios = [0.382, 0.5, 0.618];
+        let out = svgLine(A.x, A.y, B.x, B.y);
+        ratios.forEach(r => {
+          const ry = A.y + (B.y - A.y) * r;
+          if (d.type === 'fibonacci-fan') {
+            const s = extendSegment(A, { x: B.x, y: ry }, W, H, false, true);
+            if (s) out += svgLine(s.x1, s.y1, s.x2, s.y2);
+          } else {
+            out += svgLine(A.x, A.y, B.x, ry);
+          }
+        });
+        return out;
+      }
+      case 'gann-box': {
+        const x = Math.min(A.x, B.x), y = Math.min(A.y, B.y);
+        const w = Math.abs(B.x - A.x), h = Math.abs(B.y - A.y);
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${DRAW_FILL}" stroke="${DRAW_COLOR}" stroke-width="1.5" />`
+          + svgLine(x, y, x + w, y + h)
+          + svgLine(x + w, y, x, y + h)
+          + svgLine(x, y + h / 2, x + w, y + h / 2, true)
+          + svgLine(x + w / 2, y, x + w / 2, y + h, true);
+      }
+      case 'pitchfork': {
+        const mx = (B.x + Cc.x) / 2, my = (B.y + Cc.y) / 2;
+        const med = extendSegment(A, { x: mx, y: my }, W, H, false, true);
+        const up = extendSegment(B, { x: B.x + (mx - A.x), y: B.y + (my - A.y) }, W, H, false, true);
+        const dn = extendSegment(Cc, { x: Cc.x + (mx - A.x), y: Cc.y + (my - A.y) }, W, H, false, true);
+        return (med ? svgLine(med.x1, med.y1, med.x2, med.y2) : '')
+          + (up ? svgLine(up.x1, up.y1, up.x2, up.y2) : '')
+          + (dn ? svgLine(dn.x1, dn.y1, dn.x2, dn.y2) : '');
+      }
+      case 'fibonacci-retracement': {
+        const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        const pA = d.points[0], pB = d.points[1];
+        const x0 = Math.min(A.x, B.x), x1 = Math.max(A.x, B.x);
+        let out = '';
+        levels.forEach(L => {
+          const price = pA.price + (pB.price - pA.price) * L;
+          const y = drawPriceToY(price);
+          if (y === null) return;
+          out += svgLine(x0, y, Math.min(W, x1 + 70), y, L !== 0 && L !== 1);
+          out += svgText(Math.min(W - 46, x1 + 4), y - 3, (L * 100).toFixed(1) + '%');
+        });
+        return out;
+      }
+      case 'date-range':
+      case 'price-range':
+      case 'date-price-range': {
+        const pA = d.points[0], pB = d.points[1];
+        const x = Math.min(A.x, B.x), y = Math.min(A.y, B.y);
+        const w = Math.abs(B.x - A.x), h = Math.abs(B.y - A.y);
+        let label = '';
+        if (d.type !== 'price-range') {
+          const secs = Math.abs(pB.time - pA.time);
+          const days = Math.floor(secs / 86400);
+          const hrs = Math.floor((secs % 86400) / 3600);
+          const mins = Math.floor((secs % 3600) / 60);
+          label += days > 0 ? `${days}d ${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}` : `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+        }
+        if (d.type !== 'date-range') {
+          const diff = pB.price - pA.price;
+          const pct = pA.price !== 0 ? (diff / pA.price * 100) : 0;
+          const priceTxt = `${diff >= 0 ? '+' : ''}${diff.toFixed(getPrecision(pA.price))} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+          label += label ? '  •  ' + priceTxt : priceTxt;
+        }
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${DRAW_FILL}" stroke="${DRAW_COLOR}" stroke-width="1" stroke-dasharray="4,3" />`
+          + svgText(x + 6, y + 16, label);
+      }
+      case 'cyclic-lines': {
+        const pA = d.points[0], pB = d.points[1];
+        const period = Math.abs(pB.time - pA.time);
+        if (period <= 0) return '';
+        let out = '';
+        for (let k = 0; k < 60; k++) {
+          const x = drawTimeToX(pA.time + k * period);
+          if (x === null) break;
+          if (x > W) break;
+          out += svgLine(x, 0, x, H, k !== 0);
+        }
+        return out;
+      }
+      default:
+        return '';
+    }
+  }
+
+  function renderDrawings() {
+    const svg = document.getElementById('drawings-layer');
+    if (!svg || !state.chart || !state.series) return;
+    const area = document.getElementById('chart-area-container');
+    const W = area ? area.clientWidth : 800;
+    const H = area ? area.clientHeight : 400;
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    let out = '';
+    (state.drawings || []).forEach(d => { out += drawingToSvg(d, W, H); });
+    if (state.drawingTool && state.drawingPoints.length) {
+      const preview = { id: 'preview', type: state.drawingTool, points: state.drawingPoints };
+      out += drawingToSvg(preview, W, H);
+      state.drawingPoints.forEach(p => {
+        const xy = drawXY(p);
+        if (xy) out += `<circle cx="${xy.x}" cy="${xy.y}" r="3.5" fill="${DRAW_COLOR}" />`;
+      });
+    }
+    svg.innerHTML = out;
+  }
+
+  function selectDrawingTool(key) {
+    if (state.drawingTool === key) { exitDrawingMode(); return; }
+    state.drawingTool = key;
+    state.drawingPoints = [];
+    const cap = document.getElementById('drawings-capture');
+    if (cap) cap.style.display = 'block';
+    document.querySelectorAll('.drawing-tool-item').forEach(b => b.classList.toggle('active', b.dataset.tool === key));
+    updateDrawingHint();
+    renderDrawings();
+  }
+
+  function exitDrawingMode() {
+    state.drawingTool = null;
+    state.drawingPoints = [];
+    const cap = document.getElementById('drawings-capture');
+    if (cap) cap.style.display = 'none';
+    document.querySelectorAll('.drawing-tool-item').forEach(b => b.classList.remove('active'));
+    updateDrawingHint();
+    renderDrawings();
+  }
+
+  function updateDrawingHint() {
+    const hint = document.getElementById('drawings-hint');
+    if (!hint) return;
+    if (!state.drawingTool) { hint.style.display = 'none'; hint.textContent = ''; return; }
+    const tool = DRAWING_TOOLS.find(t => t.key === state.drawingTool);
+    const need = tool ? tool.points : 1;
+    const done = state.drawingPoints.length;
+    hint.style.display = 'block';
+    hint.textContent = done >= need
+      ? `${tool.label}: placed — click again for another, Esc to stop`
+      : `${tool.label}: click point ${done + 1} of ${need} on the chart (Esc to stop)`;
+  }
+
+  window.toggleDrawingsPanel = function (force) {
+    const panel = document.getElementById('drawings-panel');
+    if (!panel) return;
+    const show = force !== undefined ? force : panel.style.display === 'none';
+    panel.style.display = show ? 'flex' : 'none';
+    document.getElementById('btn-indicators-toggle')?.classList.toggle('active', show);
+    if (!show) exitDrawingMode();
+  };
+
+  window.deleteAllDrawings = function () {
+    state.drawings = [];
+    state.drawingPoints = [];
+    saveDrawings();
+    renderDrawings();
+  };
+
+  function buildDrawingsList() {
+    const list = document.getElementById('drawings-list');
+    if (!list) return;
+    list.innerHTML = '';
+    DRAWING_TOOLS.forEach(tool => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'drawing-tool-item';
+      btn.dataset.tool = tool.key;
+      btn.textContent = tool.label;
+      btn.addEventListener('click', () => selectDrawingTool(tool.key));
+      list.appendChild(btn);
+    });
+  }
+
+  buildDrawingsList();
+
+  document.getElementById('drawings-capture')?.addEventListener('click', (e) => {
+    if (!state.drawingTool || !state.chart || !state.series) return;
+    const area = document.getElementById('chart-area-container');
+    if (!area) return;
+    const rect = area.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    let time = null, price = null;
+    try { time = state.chart.timeScale().coordinateToTime(x); } catch (err) {}
+    try { price = state.series.coordinateToPrice(y); } catch (err) {}
+    if (time === null || time === undefined || price === null || price === undefined || isNaN(price)) return;
+    state.drawingPoints.push({ time, price });
+    const tool = DRAWING_TOOLS.find(t => t.key === state.drawingTool);
+    if (tool && state.drawingPoints.length >= tool.points) {
+      state.drawings.push({
+        id: 'd' + Date.now() + Math.floor(Math.random() * 999),
+        type: state.drawingTool,
+        points: state.drawingPoints.slice(),
+      });
+      state.drawingPoints = [];
+      saveDrawings();
+    }
+    renderDrawings();
+    updateDrawingHint();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.drawingTool) exitDrawingMode();
+  });
 
   // --- Active Trades Monitor & Real-time Settlement ---
   function startActiveTradesMonitor() {
@@ -1643,6 +2483,7 @@
         }
       }
       updateChartTradesOverlay();
+      renderDrawings();
       updateActiveTradesRealtime();
     }, 250);
   }
@@ -2098,7 +2939,7 @@
         <div class="deal-detail-row"><span>ID:</span><b>${uuid}</b></div>
         <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 82}%</b></div>
         <div class="deal-detail-row"><span>Open Price:</span><b>${trade.open_price}</b></div>
-        <div class="deal-detail-row"><span>Close Price:</span><b>${state.currentPrice}</b></div>
+        <div class="deal-detail-row"><span>Close Price:</span><b>${resultData.close_price ?? state.currentPrice}</b></div>
         <div class="deal-detail-row"><span>Open time:</span><b>${nowStr}</b></div>
         <div class="deal-detail-row"><span>Close time:</span><b>${nowStr}</b></div>
         <div class="deal-detail-row"><span>Duration:</span><b>${durStr}</b></div>
@@ -2131,9 +2972,13 @@
   // --- Trades Tab Navigation (Active vs History) ---
   document.querySelectorAll('.trades-tab').forEach(tab => {
     tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      if (target === 'history' && state.settings.hideResults) {
+        showToast('Trade results are hidden', 'Turn off "Hide trade results" in Settings to see your history.', 'info');
+        return;
+      }
       document.querySelectorAll('.trades-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      const target = tab.dataset.tab;
       if (target === 'active') {
         el.activeTradesContainer.style.display = 'block';
         el.closedTradesContainer.style.display = 'none';
@@ -2219,16 +3064,15 @@
 
   // --- Technical Indicators Event Handlers ---
   const indBtn = document.getElementById('btn-indicators-toggle');
-  const indDrop = document.getElementById('indicators-dropdown');
   indBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
-    indDrop?.classList.toggle('open');
-    indBtn.classList.toggle('active', indDrop?.classList.contains('open'));
+    toggleDrawingsPanel();
   });
 
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('#btn-indicators-toggle') && !e.target.closest('#indicators-dropdown')) {
-      indDrop?.classList.remove('open');
+    if (!e.target.closest('#btn-indicators-toggle') && !e.target.closest('#drawings-panel') && !e.target.closest('#drawings-capture')) {
+      const panel = document.getElementById('drawings-panel');
+      if (panel) panel.style.display = 'none';
       indBtn?.classList.remove('active');
     }
   });
@@ -2243,6 +3087,10 @@
   });
   document.getElementById('chk-ind-bollinger')?.addEventListener('change', (e) => {
     state.indicators.bollinger = e.target.checked;
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-rsi')?.addEventListener('change', (e) => {
+    state.indicators.rsi = e.target.checked;
     updateIndicators();
   });
 
@@ -2363,6 +3211,9 @@
 
   document.getElementById('chk-sound')?.addEventListener('change', (e) => {
     soundContext.enabled = e.target.checked;
+    state.settings.sound = e.target.checked;
+    saveSettings();
+    applySoundButton();
   });
 
   // Close modals on outside click
@@ -2383,10 +3234,6 @@
     if (!e.target.closest('.account-switcher-wrap')) {
       el.accountDropdown?.classList.remove('open');
     }
-    if (!e.target.closest('.indicators-menu-wrap')) {
-      indDrop?.classList.remove('open');
-      indBtn?.classList.remove('active');
-    }
     if (e.target === el.leaderboardModal) el.leaderboardModal.classList.remove('open');
     if (e.target === el.settingsModal) el.settingsModal.classList.remove('open');
   });
@@ -2403,6 +3250,8 @@
 
   function bindEvents() {
     renderTimeDisplay();
+    wireSettingsControls();
+    applyChartBackground();
     document.getElementById('panel-asset-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       state.assetPanelMode = 'replace';
@@ -2864,14 +3713,9 @@
     if (!inp) return;
     let val = Math.max(0, Math.min(10, parseInt(inp.value || '8') + delta));
     inp.value = val;
-    if (state.chart) {
-      state.chart.applyOptions({
-        grid: {
-          vertLines: { color: `rgba(24, 32, 48, ${val / 10})` },
-          horzLines: { color: `rgba(24, 32, 48, ${val / 10})` },
-        }
-      });
-    }
+    state.settings.gridOpacity = val;
+    saveSettings();
+    applyChartColors();
   };
 
   // Account dropdown switcher toggle

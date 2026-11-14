@@ -297,12 +297,12 @@
       </div>
 
       <!-- Welcome Bonus Banner (Exact Quotex DOM) -->
-      <div class="q04vx header-banner-top">
+      <a href="{{ route('deposit') }}" class="q04vx header-banner-top" title="Deposit and get 50% bonus">
         <div class="r7UKG">
           <span>Get a <b>50% bonus</b> on your deposit!</span>
           <div class="VRCVp">50%</div>
         </div>
-      </div>
+      </a>
 
       <div class="header__container">
         <!-- User Menu Dropdown -->
@@ -395,10 +395,140 @@
         </div>
 
         <!-- Notification Bell -->
-        <button type="button" class="btn-platform-bell" title="Notifications">
+        @php
+          $pNotifTxs = (isset($user) && $user)
+            ? \App\Models\Transaction::where('user_id', $user->id)->latest()->limit(8)->get()
+            : collect();
+          $pNotifDep = $pNotifTxs->where('type', 'deposit')->count();
+          $pNotifWdl = $pNotifTxs->where('type', 'withdrawal')->count();
+          // +1 = the always-present 50% Welcome Bonus announcement below.
+          $pNotifTotal = $pNotifTxs->count() + 1;
+        @endphp
+        <button type="button" class="btn-platform-bell" id="btn-platform-bell" onclick="togglePlatformNotifications(event)" title="Notifications">
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-          <span class="bell-count">2</span>
+          <span class="bell-count" id="platform-bell-count">{{ $pNotifTotal }}</span>
         </button>
+
+        <!-- Notifications Popover Backdrop -->
+        <div class="notifications-backdrop" id="platform-notifications-backdrop" style="display: none;" onclick="closePlatformNotifications()"></div>
+
+        <!-- Notifications Popover Dropdown -->
+        <div class="notifications-popover" id="platform-notifications-popover" style="display: none;" dir="ltr">
+          <div class="notif-popover-header">
+            <div class="notif-header-title-wrap">
+              <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+              <span class="notif-header-title">Notifications</span>
+              <span class="notif-header-count">{{ $pNotifTotal }}</span>
+            </div>
+            <div class="notif-header-actions">
+              <button type="button" class="btn-mark-all-read" onclick="markAllPlatformNotificationsRead()" title="Mark all as read">Mark as read</button>
+              <button type="button" class="btn-close-notif" onclick="closePlatformNotifications()" title="Close">✕</button>
+            </div>
+          </div>
+
+          <!-- Filter Tabs -->
+          <div class="notif-tabs">
+            <button type="button" class="notif-tab active" data-tab="all" onclick="filterPlatformNotifications('all', this)">All</button>
+            <button type="button" class="notif-tab" data-tab="deposit" onclick="filterPlatformNotifications('deposit', this)">
+              Deposits <span class="notif-tab-badge">{{ $pNotifDep + 1 }}</span>
+            </button>
+            <button type="button" class="notif-tab" data-tab="withdrawal" onclick="filterPlatformNotifications('withdrawal', this)">
+              Withdrawals <span class="notif-tab-badge">{{ $pNotifWdl }}</span>
+            </button>
+          </div>
+
+          <!-- Notifications List -->
+          <div class="notif-list" id="platform-notif-list">
+            @foreach($pNotifTxs as $tx)
+              @php
+                $pIsDep = ($tx->type === 'deposit');
+                $pIsSuccess = in_array(strtolower($tx->status), ['completed', 'approved', 'success']);
+                $pIsPending = in_array(strtolower($tx->status), ['pending', 'processing', 'in_review']);
+              @endphp
+              <div class="notif-item unread notif-type-{{ $tx->type }}" data-type="{{ $tx->type }}">
+                <div class="notif-icon-col {{ $pIsDep ? 'notif-icon-deposit' : 'notif-icon-withdrawal' }}">
+                  @if($pIsDep)
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
+                  @else
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#026FD3" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 20V4m0 0l-5 5m5-5l5 5"/></svg>
+                  @endif
+                </div>
+                <div class="notif-content-col">
+                  <div class="notif-title-row">
+                    <span class="notif-title {{ $pIsDep ? 'text-deposit' : 'text-withdrawal' }}">
+                      {{ $pIsDep ? ($pIsSuccess ? 'Deposit Successful' : 'Deposit ' . ucfirst($tx->status)) : ($pIsSuccess ? 'Withdrawal Processed' : 'Withdrawal ' . ucfirst($tx->status)) }}
+                    </span>
+                    <span class="notif-badge-status {{ $pIsSuccess ? 'status-success' : ($pIsPending ? 'status-pending' : 'status-danger') }}">
+                      {{ ucfirst($tx->status) }}
+                    </span>
+                  </div>
+                  <div class="notif-amount-row">
+                    <span class="notif-amount {{ $pIsDep ? 'text-deposit' : 'text-withdrawal' }}">
+                      {{ $pIsDep ? '+' : '-' }}${{ number_format($tx->amount, 2) }}
+                    </span>
+                    <span class="notif-method">{{ $tx->method ?? 'USDT' }}</span>
+                  </div>
+                  <p class="notif-desc">
+                    {{ $pIsDep ? 'Funds credited to Live balance.' : 'Withdrawal payout processed to destination.' }}
+                  </p>
+                  <div class="notif-meta-row">
+                    <span class="notif-time">{{ $tx->created_at ? $tx->created_at->diffForHumans() : 'Recently' }}</span>
+                    <a href="{{ $pIsDep ? route('deposit') : route('withdrawal') }}" class="notif-action-link">View Details →</a>
+                  </div>
+                </div>
+              </div>
+            @endforeach
+
+            @if($pNotifTxs->isEmpty())
+              <div class="notif-item notif-type-deposit" data-type="deposit">
+                <div class="notif-icon-col notif-icon-deposit">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
+                </div>
+                <div class="notif-content-col">
+                  <div class="notif-title-row">
+                    <span class="notif-title text-deposit">No transactions yet</span>
+                  </div>
+                  <p class="notif-desc">Your deposits and withdrawals will appear here.</p>
+                  <div class="notif-meta-row">
+                    <a href="{{ route('deposit') }}" class="notif-action-link">Make a Deposit →</a>
+                  </div>
+                </div>
+              </div>
+            @endif
+
+            <!-- 50% Deposit Bonus Notification -->
+            <div class="notif-item notif-type-deposit" data-type="deposit">
+              <div class="notif-icon-col notif-icon-bonus">
+                <span class="bonus-emoji">🚀</span>
+              </div>
+              <div class="notif-content-col">
+                <div class="notif-title-row">
+                  <span class="notif-title text-bonus">50% Welcome Bonus</span>
+                  <span class="notif-badge-status status-bonus">Active</span>
+                </div>
+                <div class="notif-amount-row">
+                  <span class="notif-amount text-bonus">+$25.00 Bonus</span>
+                  <span class="notif-method">Promo: WELCOME50</span>
+                </div>
+                <p class="notif-desc">50% extra bonus credited to boost your initial trading volume and earnings.</p>
+                <div class="notif-meta-row">
+                  <span class="notif-time">Today, 11:20 AM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer with Quick Action Links -->
+          <div class="notif-popover-footer">
+            <a href="{{ route('deposit') }}" class="btn-notif-deposit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+              Deposit Now
+            </a>
+            <a href="{{ route('withdrawal') }}" class="btn-notif-withdrawal">
+              Withdrawal
+            </a>
+          </div>
+        </div>
 
         <!-- Sidebar action buttons -->
         <div class="header__sidebar">
@@ -488,6 +618,94 @@
         body: JSON.stringify({ account_type: type })
       }).then(() => window.location.reload());
     }
+
+    // Platform header bell — notifications popover (same behaviour as the trade page bell)
+    function closePlatformNotifications() {
+      const pop = document.getElementById('platform-notifications-popover');
+      const bdrop = document.getElementById('platform-notifications-backdrop');
+      if (pop) {
+        pop.style.display = 'none';
+        pop.classList.remove('open');
+      }
+      if (bdrop) {
+        bdrop.style.display = 'none';
+      }
+    }
+
+    function togglePlatformNotifications(e) {
+      if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+      const pop = document.getElementById('platform-notifications-popover');
+      const bdrop = document.getElementById('platform-notifications-backdrop');
+      if (!pop) return;
+
+      const isOpen = pop.classList.contains('open') && (pop.style.display === 'flex' || pop.style.display === 'block');
+      if (isOpen) {
+        closePlatformNotifications();
+        return;
+      }
+
+      const bellBtn = document.getElementById('btn-platform-bell');
+      const isMobile = window.innerWidth <= 768;
+      if (bellBtn && !isMobile) {
+        const rect = bellBtn.getBoundingClientRect();
+        pop.style.position = 'fixed';
+        pop.style.top = (rect.bottom + 6) + 'px';
+        pop.style.left = Math.max(10, rect.right - 360) + 'px';
+        pop.style.right = 'auto';
+        pop.style.zIndex = '99999';
+      } else {
+        pop.style.position = 'fixed';
+        pop.style.top = '52px';
+        pop.style.left = '10px';
+        pop.style.right = '10px';
+        pop.style.width = 'auto';
+        pop.style.zIndex = '99999';
+      }
+
+      pop.style.display = 'flex';
+      pop.classList.add('open');
+      if (bdrop) {
+        bdrop.style.display = 'block';
+        bdrop.style.zIndex = '99998';
+      }
+    }
+
+    function filterPlatformNotifications(type, el) {
+      document.querySelectorAll('#platform-notifications-popover .notif-tab').forEach(t => t.classList.remove('active'));
+      if (el) el.classList.add('active');
+      document.querySelectorAll('#platform-notifications-popover .notif-item').forEach(item => {
+        const itemType = item.getAttribute('data-type');
+        item.style.display = (type === 'all' || itemType === type) ? 'flex' : 'none';
+      });
+    }
+
+    function markAllPlatformNotificationsRead() {
+      document.querySelectorAll('#platform-notifications-popover .notif-item.unread').forEach(i => i.classList.remove('unread'));
+      const badge = document.getElementById('platform-bell-count');
+      if (badge) badge.style.display = 'none';
+      const headerCount = document.querySelector('#platform-notifications-popover .notif-header-count');
+      if (headerCount) headerCount.textContent = '0';
+    }
+
+    // Close the platform notifications popover on any click outside it / the bell
+    document.addEventListener('click', (e) => {
+      const pop = document.getElementById('platform-notifications-popover');
+      const bell = document.getElementById('btn-platform-bell');
+      if (pop && !pop.contains(e.target) && (!bell || !bell.contains(e.target))) {
+        closePlatformNotifications();
+      }
+    });
+
+    // Move the popover + backdrop to <body> so no overflow:hidden ancestor can clip them
+    (function () {
+      const bdrop = document.getElementById('platform-notifications-backdrop');
+      const pop = document.getElementById('platform-notifications-popover');
+      if (bdrop && bdrop.parentElement !== document.body) document.body.appendChild(bdrop);
+      if (pop && pop.parentElement !== document.body) document.body.appendChild(pop);
+    })();
   </script>
   @stack('scripts')
 </body>

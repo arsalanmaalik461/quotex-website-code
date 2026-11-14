@@ -41,7 +41,321 @@
   --t-text-sub: #8593a8;
   --t-text-muted: #78839b;
   --t-overlay: rgba(28, 31, 45, 0.90);
+  --t-bg-hover: rgba(255, 255, 255, 0.06);
   --t-radius: 8px;
+}
+
+/* ===== THEME TEMPLATES (Settings > Template) =====
+   Full Night = the :root defaults above (no override needed).
+   Light / Twilight override the theme variables and the few surfaces
+   whose background is hardcoded instead of using a variable. */
+[data-theme="twilight"] {
+  --t-bg-main: #232742;
+  --t-bg-card: #2e3352;
+  --t-bg-sidebar: #232742;
+  --t-bg-surface: #2e3352;
+  --t-bg-input: #1d2040;
+  --t-border: rgba(255, 255, 255, 0.10);
+  --t-border-sub: #2e3352;
+  --t-text: #eef0ff;
+  --t-text-sub: #a5abd0;
+  --t-text-muted: #8a90b8;
+  --t-overlay: rgba(35, 39, 66, 0.90);
+  --t-bg-hover: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] {
+  --t-bg-main: #f2f4f8;
+  --t-bg-card: #ffffff;
+  --t-bg-sidebar: #ffffff;
+  --t-bg-surface: #ffffff;
+  --t-bg-input: #eef1f6;
+  --t-border: #dfe4ee;
+  --t-border-sub: #dfe4ee;
+  --t-text: #0f172a;
+  --t-text-sub: #475569;
+  --t-text-muted: #64748b;
+  --t-overlay: rgba(242, 244, 248, 0.92);
+  --t-bg-hover: rgba(15, 23, 42, 0.06);
+}
+
+/* Hardcoded dark surfaces -> follow the active theme. */
+[data-theme="light"] .trade-sidebar,
+[data-theme="twilight"] .trade-sidebar {
+  background: var(--t-bg-sidebar);
+  border-right: 1px solid var(--t-border);
+}
+
+[data-theme="light"] .trade-header,
+[data-theme="twilight"] .trade-header {
+  background: var(--t-bg-main);
+  border-bottom: 1px solid var(--t-border);
+}
+
+[data-theme="light"] .trade-panel,
+[data-theme="twilight"] .trade-panel {
+  background: var(--t-bg-card);
+  border-left: 1px solid var(--t-border);
+}
+
+[data-theme="light"] .settings-sidepanel,
+[data-theme="twilight"] .settings-sidepanel {
+  background: var(--t-bg-card);
+  border-right: 1px solid var(--t-border);
+  box-shadow: 12px 0 36px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="light"] .sidebar-btn,
+[data-theme="twilight"] .sidebar-btn {
+  color: var(--t-text-muted);
+}
+
+[data-theme="light"] .sidebar-btn:hover,
+[data-theme="twilight"] .sidebar-btn:hover {
+  color: var(--t-text);
+  background: var(--t-bg-hover);
+}
+
+[data-theme="light"] .sidebar-icon-mini,
+[data-theme="twilight"] .sidebar-icon-mini {
+  color: var(--t-text-muted);
+}
+
+[data-theme="light"] .sidebar-icon-mini:hover,
+[data-theme="twilight"] .sidebar-icon-mini:hover {
+  color: var(--t-text);
+}
+
+/* Short order label mode (Settings > Short order label): keep the trade
+   cards compact by hiding their detail rows. */
+body.short-order-labels .deal-card-details {
+  display: none;
+}
+
+body.short-order-labels .mob-deal-row {
+  display: none;
+}
+
+/* Indicator legend (top-left of the chart, filled by trade.js). */
+.indicators-legend {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  z-index: 20;
+  display: none;
+  gap: 10px;
+  align-items: center;
+  background: rgba(20, 25, 36, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
+[data-theme="light"] .indicators-legend {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: #dfe4ee;
+}
+
+/* ===== DRAWINGS (real Quotex Drawings panel) ===== */
+.drawings-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 25;
+  pointer-events: none;
+}
+
+.drawings-capture {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  cursor: crosshair;
+}
+
+.drawings-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 236px;
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  background: #141724;
+  border-right: 1px solid #222a3d;
+  box-shadow: 12px 0 36px rgba(0, 0, 0, 0.7);
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+
+.drawings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 12px;
+}
+
+.drawings-panel-close {
+  background: transparent;
+  border: none;
+  color: #8593a8;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.drawings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawing-tool-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #c6cede;
+  font-size: 13px;
+  text-align: left;
+  padding: 9px 8px;
+  cursor: pointer;
+}
+
+.drawing-tool-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.drawing-tool-item.active {
+  background: rgba(0, 200, 83, 0.14);
+  color: #00e676;
+}
+
+.drawings-delete-all {
+  margin: 12px 0 4px;
+  background: transparent;
+  border: none;
+  color: #ff5252;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  padding: 6px 8px;
+}
+
+.drawings-delete-all:hover {
+  color: #ff8a80;
+}
+
+.drawings-section-title {
+  margin: 14px 0 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #78839b;
+}
+
+.drawings-indicators {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px;
+}
+
+.drawings-hint {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 214, 0, 0.1);
+  border: 1px solid rgba(255, 214, 0, 0.25);
+  border-radius: 6px;
+  color: #ffe082;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Trade confirm modal (1-click trade OFF) — in-app, centred, no native dialog. */
+.trade-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.trade-confirm-box {
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  background: #171d2b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.trade-confirm-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.trade-confirm-text {
+  font-size: 13px;
+  color: #8593a8;
+  margin: 0 0 18px;
+}
+
+.trade-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.trade-confirm-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.trade-confirm-btn.cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.trade-confirm-btn.ok {
+  background: #00c853;
+  color: #000;
+}
+
+/* Remove-chart-background button (Settings > Background). */
+.bg-remove-btn {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #8593a8;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 @keyframes pulse {
@@ -2069,6 +2383,38 @@ body.trade-body {
   box-shadow: 0 4px 16px rgba(0, 200, 83, 0.4);
 }
 
+/* Stacked trade-opened toasts (one per placed trade, real Quotex). */
+.chart-trade-toasts {
+  position: absolute;
+  top: 108px;
+  left: 48px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  max-height: 70%;
+  overflow: hidden;
+}
+
+.chart-trade-toasts .floating-green-toast {
+  position: static;
+  pointer-events: auto;
+  max-width: 480px;
+  animation: trade-toast-in 0.18s ease-out;
+}
+
+@keyframes trade-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .toast-dismiss-btn {
   background: transparent;
   border: none;
@@ -2617,11 +2963,11 @@ body.trade-body {
 }
 
 .trade-guide-line span {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 700;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 500;
   white-space: nowrap;
-  background: rgba(20, 25, 36, 0.75);
+  background: transparent;
   padding: 2px 6px;
   border-radius: 3px;
   letter-spacing: 0.3px;
@@ -2654,6 +3000,25 @@ body.trade-body {
   display: flex;
   align-items: center;
   z-index: 12;
+}
+
+/* Trade zone shading (real Quotex): Buy tints the chart above the entry
+   line green, Sell tints it below the line red. Translucent so the
+   candles stay visible through it; no active trade, no shading. */
+.chart-trade-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.chart-trade-shade.up {
+  background: rgba(16, 160, 85, 0.12);
+}
+
+.chart-trade-shade.down {
+  background: rgba(232, 91, 78, 0.12);
 }
 
 .chart-trade-line {
@@ -4397,25 +4762,29 @@ body.trade-body {
   font-size: 13px;
 }
 
-/* Toast */
+/* Toast — centered at the top of the screen (was: top 64px / right 280px,
+   which floated off-center and overlapped the chart on smaller screens) */
 .trade-toast {
   position: fixed;
   top: 64px;
-  right: 280px;
+  left: 50%;
+  right: auto;
+  max-width: calc(100vw - 32px);
+  text-align: center;
   background: #181d2a;
   border: 1px solid var(--t-border);
   border-radius: 8px;
   padding: 10px 16px;
   z-index: 300;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  transform: translateY(-20px);
+  transform: translate(-50%, -20px);
   opacity: 0;
   pointer-events: none;
   transition: all 0.25s ease-out;
 }
 
 .trade-toast.show {
-  transform: translateY(0);
+  transform: translate(-50%, 0);
   opacity: 1;
   pointer-events: auto;
 }

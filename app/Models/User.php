@@ -16,6 +16,7 @@ class User extends Authenticatable
         'name', 'email', 'password', 'demo_balance', 'live_balance',
         'country', 'account_type', 'email_verified', 'kyc_status',
         'is_admin', 'is_blocked', 'referral_code', 'referred_by', 'phone', 'avatar',
+        'last_name', 'birthday', 'address', 'nickname', 'login_2fa', 'withdrawal_2fa',
     ];
 
     protected $hidden = [
@@ -32,6 +33,8 @@ class User extends Authenticatable
             'live_balance' => 'decimal:2',
             'is_admin' => 'boolean',
             'is_blocked' => 'boolean',
+            'login_2fa' => 'boolean',
+            'withdrawal_2fa' => 'boolean',
         ];
     }
 

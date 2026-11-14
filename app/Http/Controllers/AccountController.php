@@ -16,8 +16,11 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\URL;
 
 class AccountController extends Controller
 {
@@ -295,50 +298,6 @@ class AccountController extends Controller
         $startDate   = $request->query('startDate');
         $endDate     = $request->query('endDate');
 
-        // If user has 0 trades, seed initial realistic trades matching Quotex DOM
-        if (Trade::where('user_id', $user->id)->count() === 0) {
-            $asset = \App\Models\Asset::where('symbol', 'USD/JPY (OTC)')->first() 
-                ?? \App\Models\Asset::firstOrCreate(
-                    ['symbol' => 'USD/JPY (OTC)'],
-                    ['name' => 'USD/JPY (OTC)', 'type' => 'currency', 'payout_rate' => 92, 'is_active' => true, 'current_price' => 154.085]
-                );
-
-            $demoTrades = [
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.076, 'close' => 154.098, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.076, 'close' => 154.098, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.073, 'close' => 154.093, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.073, 'close' => 154.093, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.073, 'close' => 154.093, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.073, 'close' => 154.084, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.073, 'close' => 154.084, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.073, 'close' => 154.084, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.069, 'close' => 154.082, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.069, 'close' => 154.082, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.069, 'close' => 154.082, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'up', 'inv' => 100, 'open' => 154.069, 'close' => 154.082, 'res' => 'win',  'payout' => 192.00, 'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.065, 'close' => 154.079, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.065, 'close' => 154.079, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-                ['dir' => 'down', 'inv' => 100, 'open' => 154.065, 'close' => 154.079, 'res' => 'loss', 'payout' => 0.00,   'sec' => 5],
-            ];
-
-            foreach ($demoTrades as $idx => $dt) {
-                $openTime = now()->subMinutes(10)->subSeconds($idx * 6);
-                Trade::create([
-                    'user_id'          => $user->id,
-                    'asset_id'         => $asset->id,
-                    'direction'        => $dt['dir'],
-                    'investment'       => $dt['inv'],
-                    'payout'           => $dt['payout'],
-                    'open_price'       => $dt['open'],
-                    'close_price'      => $dt['close'],
-                    'duration_seconds' => $dt['sec'],
-                    'result'           => $dt['res'],
-                    'account_type'     => 'demo',
-                    'opened_at'        => $openTime,
-                    'closed_at'        => $openTime->copy()->addSeconds($dt['sec']),
-                ]);
-            }
-        }
 
         $query = Trade::with('asset')
             ->where('user_id', $user->id)
@@ -641,12 +600,29 @@ class AccountController extends Controller
         $request->validate([
             'name'    => 'nullable|string|max:255',
             'country' => 'nullable|string',
+            'last_name' => 'nullable|string|max:255',
+            'birthday' => 'nullable|date',
+            'address' => 'nullable|string|max:255',
+            'nickname' => 'nullable|string|max:255',
         ]);
 
-        $user->update([
+        $update = [
             'name'    => $request->name ?? $user->name,
             'country' => $request->country ?? $user->country,
-        ]);
+            'last_name' => $request->last_name,
+            'birthday' => $request->birthday,
+            'address' => $request->address,
+            'nickname' => $request->nickname ? ltrim($request->nickname, '#') : null,
+        ];
+
+        if ($request->hasFile('file')) {
+            $file = $request->file('file');
+            $fileName = 'avatar_' . $user->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            $file->move(public_path('uploads/avatars'), $fileName);
+            $update['avatar'] = 'uploads/avatars/' . $fileName;
+        }
+
+        $user->update($update);
 
         if ($request->filled('password')) {
             $request->validate(['password' => 'min:6|confirmed']);
@@ -654,5 +630,104 @@ class AccountController extends Controller
         }
 
         return back()->with('success', 'Profile updated successfully.');
+    }
+
+    /**
+     * Save the two-step verification toggles from the Profile page.
+     * (Login never enforced 2FA before; the toggles were hardcoded on.
+     * They now persist the user's real choice. Enforcement at login
+     * is a separate step and is NOT added here.)
+     */
+    public function updateTwoFactor(Request $request)
+    {
+        $user = $this->ensureAuth();
+        $user->update([
+            'login_2fa' => $request->boolean('login_2fa'),
+            'withdrawal_2fa' => $request->boolean('withdrawal_2fa'),
+        ]);
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Send a real email-verification link. The old Resend button only
+     * showed an alert and never sent anything.
+     */
+    public function resendVerificationEmail(Request $request)
+    {
+        $user = $this->ensureAuth();
+        if ($user->email_verified || $user->email_verified_at) {
+            return response()->json(['success' => false, 'message' => 'Your email is already verified.'], 422);
+        }
+        $url = URL::temporarySignedRoute('verification.verify', now()->addHours(24), [
+            'id' => $user->id,
+            'hash' => sha1($user->email),
+        ]);
+        try {
+            Mail::html(
+                '<p>Hello ' . e($user->name ?? 'trader') . ',</p>'
+                . '<p>Please verify your email address for your Quotex account by clicking the link below:</p>'
+                . '<p><a href="' . e($url) . '">Verify my email</a></p>'
+                . '<p>This link expires in 24 hours.</p>',
+                function ($message) use ($user) {
+                    $message->to($user->email)->subject('Verify your email address');
+                }
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Verification email failed to send', ['user_id' => $user->id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not send the verification email. Please try again later.'], 500);
+        }
+        return response()->json(['success' => true, 'message' => 'Verification link sent to your email!']);
+    }
+
+    /** Verify an email from the signed link in the verification email. */
+    public function verifyEmail(Request $request, $id, $hash)
+    {
+        $user = User::find($id);
+        if (!$user || !hash_equals(sha1($user->email), (string) $hash)) {
+            abort(404);
+        }
+        $user->email_verified = true;
+        $user->email_verified_at = now();
+        $user->save();
+        return redirect()->route('profile')->with('success', 'Your email address has been verified.');
+    }
+
+    /**
+     * Delete the logged-in user's own account.
+     *
+     * Same delete as AdminUserController::destroy() ($user->delete()):
+     * the migrations cascade-delete the user's trades, transactions,
+     * KYC verifications, referral commissions and admin logs, and
+     * null out referred_by / reviewed_by references, so no other
+     * user's data is touched. The two leftovers with no foreign key
+     * (password_reset_tokens, sessions) are removed explicitly.
+     * Unlike the admin-panel destroy, this is a self-delete, so it
+     * is allowed for the account owner themselves (including an
+     * admin) — the confirm dialog on the form is the safeguard
+     * against an accidental click.
+     */
+    public function deleteAccount(Request $request)
+    {
+        $user = $this->ensureAuth();
+        $userId = $user->id;
+        $email = $user->email;
+
+        DB::transaction(function () use ($user, $userId, $email) {
+            DB::table('password_reset_tokens')->where('email', $email)->delete();
+
+            if (Schema::hasTable('sessions')) {
+                DB::table('sessions')->where('user_id', $userId)->delete();
+            }
+
+            $user->delete();
+        });
+
+        Log::info('Account self-deleted', ['user_id' => $userId, 'email' => $email]);
+
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return redirect()->route('home')->with('success', 'Your account has been deleted.');
     }
 }

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Asset;
 use App\Models\AssetMarketState;
 use App\Models\Trade;
+use App\Models\TradeSimulationControl;
 use Carbon\Carbon;
 
 /**
@@ -20,7 +21,17 @@ use Carbon\Carbon;
  */
 class OtcPriceEngine
 {
+    /**
+     * Last-seconds steering: in the final 3 seconds before a forced
+     * trade expires, the live price glides gradually towards the
+     * forced outcome instead of jumping at settlement. Before that
+     * window the market follows its normal organic path.
+     */
+    public const STEER_SECONDS = 3;
+    public const STEER_MARGIN_PIPS = 10;
+
     private static array $marketStateCache = [];
+    private static array $steeringCache = [];
 
     /**
      * Get accurate decimal precision for an asset price.
@@ -204,7 +215,7 @@ class OtcPriceEngine
         $state = self::marketStateForTimestamp($asset, $timestamp);
 
         if ($state && in_array($state->mode, ['pump', 'crash'], true)) {
-            return self::calculateControlledPrice(
+            $price = self::calculateControlledPrice(
                 $asset,
                 $timestamp,
                 $state->mode,
@@ -214,11 +225,13 @@ class OtcPriceEngine
                 $precision,
                 $pip
             );
+
+            return self::applyLastSecondsSteering($asset, $timestamp, $price);
         }
 
         $mode = $asset->control_mode ?? 'auto';
         if (in_array($mode, ['pump', 'crash'], true) && $asset->control_anchor_price && $asset->control_activated_at) {
-            return self::calculateControlledPrice(
+            $price = self::calculateControlledPrice(
                 $asset,
                 $timestamp,
                 $mode,
@@ -228,9 +241,11 @@ class OtcPriceEngine
                 $precision,
                 $pip
             );
+
+            return self::applyLastSecondsSteering($asset, $timestamp, $price);
         }
 
-        return $autoPrice;
+        return self::applyLastSecondsSteering($asset, $timestamp, $autoPrice);
     }
 
     private static function calculateOrganicPrice(Asset $asset, float $timestamp, ?float $basePrice = null): float
@@ -603,6 +618,244 @@ class OtcPriceEngine
     private static function clearMarketStateCache(int $assetId): void
     {
         unset(self::$marketStateCache[$assetId]);
+    }
+
+    /**
+     * Which way must the price move for this trade to get its forced
+     * outcome? Returns 'up', 'down', or null when nothing is forced.
+     *
+     * Priority (same as TradeResultService::settle):
+     *  1. per-trade override (admin Win/Loss button on a running trade)
+     *  2. pair control_mode: force_win / force_loss / pump / crash
+     *  3. global simulation mode (top Win/Loss button in Live Trades)
+     * win_side rules are deliberately left out here: they depend on
+     * the other pending trades and are still enforced at settlement.
+     */
+    public static function forcedSideForTrade(Trade $trade, ?Asset $asset = null, ?string $globalMode = null): ?string
+    {
+        $direction = $trade->direction;
+        $opposite = $direction === 'up' ? 'down' : 'up';
+
+        $override = $trade->admin_override ?? 'none';
+        if ($override === 'force_win') {
+            return $direction;
+        }
+        if ($override === 'force_loss') {
+            return $opposite;
+        }
+
+        $asset = $asset ?? $trade->asset;
+        $pairMode = $asset ? ($asset->control_mode ?? 'auto') : 'auto';
+        if ($pairMode === 'force_win' || $pairMode === 'win') {
+            return $direction;
+        }
+        if ($pairMode === 'force_loss' || $pairMode === 'loss') {
+            return $opposite;
+        }
+        if ($pairMode === 'pump') {
+            return 'up';
+        }
+        if ($pairMode === 'crash') {
+            return 'down';
+        }
+
+        $globalMode = $globalMode ?? TradeSimulationControl::currentMode();
+        if ($globalMode === TradeSimulationControl::MODE_SIMULATION_WIN) {
+            return $direction;
+        }
+        if ($globalMode === TradeSimulationControl::MODE_SIMULATION_LOSS) {
+            return $opposite;
+        }
+
+        return null;
+    }
+
+    /**
+     * The exact close price a forced trade must end at: just past its
+     * open price (10 pips) on the forced side. Settlement uses this
+     * same target, so the chart and the result always agree.
+     */
+    public static function steeringTargetPrice(Trade $trade, string $forcedSide, ?int $precision = null): float
+    {
+        $openPrice = (float) $trade->open_price;
+        $precision = $precision ?? self::getPrecision($openPrice, $trade->asset ?? null);
+        $pip = pow(10, -$precision);
+        $margin = self::STEER_MARGIN_PIPS * $pip;
+        $target = $forcedSide === 'up' ? $openPrice + $margin : $openPrice - $margin;
+
+        return round(max($pip, $target), $precision);
+    }
+
+    /**
+     * Glide the live price towards the forced outcome in the last
+     * STEER_SECONDS before a forced trade expires.
+     *
+     * price(t) = organic(t) + progress * (target - organic(t)),
+     * progress 0 at expiry-3s and 1 at expiry, so the move is
+     * gradual and the price ends exactly on the target. Outside
+     * the window the organic price is returned untouched.
+     *
+     * Full per-trade control: the shared price can only move one
+     * way. If the trades expiring in this window need opposite
+     * directions (e.g. an UP trade and a DOWN trade both forced
+     * to lose), there is no steering at all — the chart stays on
+     * its organic path and each trade is settled on its own
+     * per-trade close price instead. That is how both can lose.
+     * When all active trades agree on one side, the target is
+     * chosen so every one of them wins/loses correctly: above
+     * the highest open for 'up', below the lowest open for 'down'.
+     */
+    private static function applyLastSecondsSteering(Asset $asset, float $timestamp, float $price): float
+    {
+        if (!$asset->exists || !$asset->id) {
+            return $price;
+        }
+
+        // Steering is a live-market effect only. Historical candles
+        // are far from "now", so skip the database lookup for them.
+        $now = time();
+        if ($timestamp < $now - 5 || $timestamp > $now + 120) {
+            return $price;
+        }
+
+        $candidates = self::steeringCandidates($asset);
+        if ($candidates === []) {
+            return $price;
+        }
+
+        $precision = self::getPrecision($price, $asset);
+        $pip = pow(10, -$precision);
+
+        $forcedSide = null;
+        $targetOpen = null;
+        $maxProgress = 0.0;
+
+        foreach ($candidates as $candidate) {
+            $expiresAt = $candidate['expires_at'];
+            $windowStart = $expiresAt - self::STEER_SECONDS;
+            if ($timestamp < $windowStart || $timestamp > $expiresAt + 1) {
+                continue;
+            }
+
+            $progress = max(0.0, min(1.0, ($timestamp - $windowStart) / self::STEER_SECONDS));
+            if ($progress <= 0.0) {
+                continue;
+            }
+
+            if ($forcedSide === null) {
+                $forcedSide = $candidate['forced_side'];
+                $targetOpen = $candidate['open_price'];
+            } elseif ($candidate['forced_side'] !== $forcedSide) {
+                // Opposite forced outcomes on the same pair:
+                // do not steer the shared price either way.
+                return $price;
+            } elseif ($forcedSide === 'up') {
+                $targetOpen = max($targetOpen, $candidate['open_price']);
+            } else {
+                $targetOpen = min($targetOpen, $candidate['open_price']);
+            }
+
+            $maxProgress = max($maxProgress, $progress);
+        }
+
+        if ($forcedSide === null || $targetOpen === null || $maxProgress <= 0.0) {
+            return $price;
+        }
+
+        $margin = self::STEER_MARGIN_PIPS * $pip;
+        $target = $forcedSide === 'up'
+            ? $targetOpen + $margin
+            : $targetOpen - $margin;
+        $target = max($pip, $target);
+
+        return round($price + $maxProgress * ($target - $price), $precision);
+    }
+
+    /**
+     * Pending forced trades on this asset, soonest expiry first.
+     * Cached once per request: generateCandles() calls
+     * getDeterministicPrice() thousands of times per page load.
+     *
+     * The forced side comes from admin / pair / global control, or
+     * from the demo 8/2 cycle for demo trades with no other force.
+     * Demo positions are peeked in expiry order, counting settled
+     * demo trades plus earlier-pending demo trades for the same
+     * user, so the peek matches what settle() will decide later.
+     */
+    private static function steeringCandidates(Asset $asset): array
+    {
+        $assetId = (int) $asset->id;
+        if (array_key_exists($assetId, self::$steeringCache)) {
+            return self::$steeringCache[$assetId];
+        }
+
+        $candidates = [];
+        try {
+            $globalMode = TradeSimulationControl::currentMode();
+            $trades = Trade::where('asset_id', $assetId)
+                ->where('result', 'pending')
+                ->orderBy('id')
+                ->limit(20)
+                ->get();
+
+            // Sort by expiry so demo positions are assigned in the
+            // order the trades will actually settle.
+            $trades = $trades->sortBy(function (Trade $trade) {
+                $openedAt = $trade->opened_at ?: $trade->created_at;
+                return ($openedAt ? (int) $openedAt->timestamp : 0) + (int) ($trade->duration_seconds ?: 60);
+            })->values();
+
+            $demoUserIds = $trades
+                ->filter(fn (Trade $t) => $t->account_type === 'demo' && self::forcedSideForTrade($t, $asset, $globalMode) === null)
+                ->pluck('user_id')->unique()->values()->all();
+            $settledDemoCounts = [];
+            if ($demoUserIds !== []) {
+                $settledDemoCounts = Trade::whereIn('user_id', $demoUserIds)
+                    ->where('account_type', 'demo')
+                    ->whereIn('result', ['win', 'loss'])
+                    ->selectRaw('user_id, COUNT(*) as cnt')
+                    ->groupBy('user_id')
+                    ->pluck('cnt', 'user_id')->all();
+            }
+            $demoOffsets = [];
+
+            foreach ($trades as $trade) {
+                $forcedSide = self::forcedSideForTrade($trade, $asset, $globalMode);
+
+                if ($trade->account_type === 'demo') {
+                    $userId = (int) $trade->user_id;
+                    $effectiveCount = (int) ($settledDemoCounts[$userId] ?? 0) + (int) ($demoOffsets[$userId] ?? 0);
+                    $demoOffsets[$userId] = (int) ($demoOffsets[$userId] ?? 0) + 1;
+
+                    if ($forcedSide === null) {
+                        $forcedSide = DemoCycleService::forcedSideForTrade($trade, $effectiveCount);
+                    }
+                }
+
+                if ($forcedSide === null) {
+                    continue;
+                }
+
+                $openedAt = $trade->opened_at ?: $trade->created_at;
+                if (!$openedAt) {
+                    continue;
+                }
+
+                $candidates[] = [
+                    'open_price' => (float) $trade->open_price,
+                    'forced_side' => $forcedSide,
+                    'expires_at' => (int) $openedAt->timestamp + (int) ($trade->duration_seconds ?: 60),
+                ];
+            }
+
+            usort($candidates, fn ($a, $b) => $a['expires_at'] <=> $b['expires_at']);
+        } catch (\Throwable) {
+            // Steering must never break the chart: on any DB error,
+            // fall back to the normal organic price.
+            $candidates = [];
+        }
+
+        return self::$steeringCache[$assetId] = $candidates;
     }
 
     /**

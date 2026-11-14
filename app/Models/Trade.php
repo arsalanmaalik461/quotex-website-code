@@ -10,12 +10,13 @@ class Trade extends Model
         'user_id', 'asset_id', 'direction', 'investment', 'payout',
         'open_price', 'close_price', 'duration_seconds', 'result',
         'account_type', 'opened_at', 'closed_at',
-        'admin_override', 'spike_injected',
+        'admin_override', 'override_set_at', 'spike_injected',
     ];
 
     protected $casts = [
         'opened_at'      => 'datetime',
         'closed_at'      => 'datetime',
+        'override_set_at' => 'datetime',
         'spike_injected' => 'boolean',
     ];
 

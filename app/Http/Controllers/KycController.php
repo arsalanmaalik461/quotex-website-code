@@ -131,19 +131,23 @@ class KycController extends Controller
             ]);
         }
 
-        // Create or update KYC record
-        KycVerification::create([
-            'user_id' => $user->id,
-            'full_name' => $request->full_name,
-            'phone' => $request->phone,
-            'id_card_front' => $frontPath,
-            'id_card_back' => $backPath,
-            'live_selfie' => $selfiePath,
-            'status' => 'pending',
-            'rejection_reason' => null,
-            'reviewed_by' => null,
-            'reviewed_at' => null,
-        ]);
+        // Create or update KYC record (one row per user: resubmission after
+        // a rejection updates the existing record instead of piling up
+        // duplicate rows for the admin to sort through).
+        KycVerification::updateOrCreate(
+            ['user_id' => $user->id],
+            [
+                'full_name' => $request->full_name,
+                'phone' => $request->phone,
+                'id_card_front' => $frontPath,
+                'id_card_back' => $backPath,
+                'live_selfie' => $selfiePath,
+                'status' => 'pending',
+                'rejection_reason' => null,
+                'reviewed_by' => null,
+                'reviewed_at' => null,
+            ]
+        );
 
         // Update user fields
         $user->update([

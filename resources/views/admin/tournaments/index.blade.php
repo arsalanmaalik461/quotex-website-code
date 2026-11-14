@@ -22,6 +22,10 @@
         <div class="text-muted" style="font-size:12px;">Total Prize Pools</div>
         <div class="stat-value" style="font-size:24px; font-weight:800; color:var(--accent); margin-top:4px;">${{ number_format($totalPrizePool, 0) }}</div>
     </div>
+    <div class="stat-card" style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:16px 20px;">
+        <div class="text-muted" style="font-size:12px;">Total Registrations</div>
+        <div class="stat-value" style="font-size:24px; font-weight:800; color:#fff; margin-top:4px;">{{ $totalRegistrations ?? 0 }}</div>
+    </div>
 </div>
 
 <div class="card">
@@ -64,6 +68,7 @@
                         <th style="padding:12px 14px;">Duration</th>
                         <th style="padding:12px 14px;">Badge / Status Note</th>
                         <th style="padding:12px 14px;">Status</th>
+                        <th style="padding:12px 14px;">Participants</th>
                         <th style="padding:12px 14px; text-align:right;">Actions</th>
                     </tr>
                 </thead>
@@ -108,8 +113,16 @@
                                 </span>
                             @endif
                         </td>
+                        <td style="padding:12px 14px;">
+                            <a href="{{ route('admin.tournaments.show', $t->id) }}" style="font-weight:800; color:#2b99ff; text-decoration:none;">
+                                {{ $t->registrations_count ?? 0 }} registered
+                            </a>
+                        </td>
                         <td style="padding:12px 14px; text-align:right;">
                             <div style="display:inline-flex; align-items:center; gap:8px;">
+                                <a href="{{ route('admin.tournaments.show', $t->id) }}" class="btn btn-sm" style="font-size:11px; padding:4px 8px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); text-decoration:none; border-radius:4px;">
+                                    Participants
+                                </a>
                                 <a href="{{ route('admin.tournaments.edit', $t->id) }}" class="btn btn-sm" style="font-size:11px; padding:4px 8px; border:1px solid var(--border); background:var(--bg-primary); color:var(--text-primary); text-decoration:none; border-radius:4px;">
                                     Edit
                                 </a>

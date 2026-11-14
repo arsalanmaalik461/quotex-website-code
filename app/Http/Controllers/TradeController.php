@@ -12,6 +12,7 @@ use App\Services\TradeResultService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class TradeController extends Controller
 {
@@ -151,7 +152,7 @@ class TradeController extends Controller
             }
             $user->save();
 
-            $trade = Trade::create([
+            $tradeAttributes = [
                 'user_id' => $user->id,
                 'asset_id' => $asset->id,
                 'direction' => $request->direction,
@@ -163,7 +164,12 @@ class TradeController extends Controller
                 'account_type' => $accountType,
                 'admin_override' => $adminOverride,
                 'opened_at' => now(),
-            ]);
+            ];
+            // Only write override_set_at once the migration has run.
+            if ($adminOverride !== 'none' && Schema::hasColumn('trades', 'override_set_at')) {
+                $tradeAttributes['override_set_at'] = now();
+            }
+            $trade = Trade::create($tradeAttributes);
 
             return [
                 'trade' => $trade,

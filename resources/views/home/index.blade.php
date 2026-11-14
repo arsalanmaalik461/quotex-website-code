@@ -3,6 +3,9 @@
 @section('title', 'QUOTEX — Innovative platform for smart investments')
 
 @section('content')
+@if(session('success'))
+  <div class="qx-alert-success" style="max-width: 1100px; margin: 16px auto 0;">{{ session('success') }}</div>
+@endif
 <!-- HERO SECTION -->
 <section class="qx-hero">
   <div class="qx-hero-inner">

@@ -7,11 +7,13 @@ use App\Models\AdminLog;
 use App\Models\Trade;
 use App\Models\TradeSimulationControl;
 use App\Models\User;
+use App\Services\DemoCycleService;
 use App\Services\TradeResultService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 class AdminTradeController extends Controller
@@ -88,11 +90,27 @@ class AdminTradeController extends Controller
     {
         $this->settleExpiredPendingTrades(300);
 
-        $trades = Trade::with(['user', 'asset'])
+        $pending = Trade::with(['user', 'asset'])
             ->where('result', 'pending')
             ->get()
             ->filter(fn ($trade) => !$this->isExpired($trade))
-            ->map(function ($trade) {
+            ->sortBy(fn ($trade) => ($trade->opened_at ?: $trade->created_at)?->timestamp ?? 0)
+            ->values();
+
+        // Settled demo counts, one grouped query for the whole list,
+        // so the admin can see each demo user's 8/2 position.
+        $demoUserIds = $pending->where('account_type', 'demo')->pluck('user_id')->unique()->values()->all();
+        $settledDemoCounts = $demoUserIds !== []
+            ? Trade::whereIn('user_id', $demoUserIds)
+                ->where('account_type', 'demo')
+                ->whereIn('result', ['win', 'loss'])
+                ->selectRaw('user_id, COUNT(*) as cnt')
+                ->groupBy('user_id')
+                ->pluck('cnt', 'user_id')->all()
+            : [];
+        $demoOffsets = [];
+
+        $trades = $pending->map(function ($trade) use ($settledDemoCounts, &$demoOffsets) {
                 $user       = $trade->user;
                 $asset      = $trade->asset;
                 $openedTs   = $trade->opened_at ? $trade->opened_at->timestamp : $trade->created_at->timestamp;
@@ -106,11 +124,29 @@ class AdminTradeController extends Controller
                     ? round(($asset->payout_percent ?? 85), 2)
                     : round(-100, 2);
 
+                // Balance of the account this trade was placed on:
+                // demo trades used demo_balance, not live_balance.
+                $isDemo = $trade->account_type === 'demo';
+                $balance = $isDemo ? (float) ($user?->demo_balance ?? 0) : (float) ($user?->live_balance ?? 0);
+
+                // Demo 8/2 position for this trade, e.g. "4/10",
+                // counting settled demo trades plus earlier pending
+                // demo trades for the same user.
+                $demoCycle = null;
+                $demoCycleResult = null;
+                if ($isDemo && $user) {
+                    $userId = (int) $user->id;
+                    $effectiveCount = (int) ($settledDemoCounts[$userId] ?? 0) + (int) ($demoOffsets[$userId] ?? 0);
+                    $demoOffsets[$userId] = (int) ($demoOffsets[$userId] ?? 0) + 1;
+                    $demoCycle = DemoCycleService::positionLabel($effectiveCount);
+                    $demoCycleResult = DemoCycleService::isLoss($userId, $effectiveCount) ? 'loss' : 'win';
+                }
+
                 return [
                     'trade_id'        => $trade->id,
                     'user_id'         => $user?->id,
                     'user_name'       => $user?->name ?? 'Unknown',
-                    'user_balance'    => number_format((float)($user?->live_balance ?? 0), 2),
+                    'user_balance'    => number_format($balance, 2),
                     'account_age'     => $user ? $user->getAccountAgeDays() : 0,
                     'referral_count'  => $user ? $user->referrals()->count() : 0,
                     'total_trades'    => $user ? $user->trades()->count() : 0,
@@ -124,6 +160,8 @@ class AdminTradeController extends Controller
                     'payout'          => (float) $trade->payout,
                     'admin_override'  => $trade->admin_override,
                     'account_type'    => $trade->account_type,
+                    'demo_cycle'      => $demoCycle,
+                    'demo_cycle_result' => $demoCycleResult,
                 ];
             })
             ->values();
@@ -199,7 +237,14 @@ class AdminTradeController extends Controller
                 return false;
             }
 
-            $lockedTrade->update(['admin_override' => $override]);
+            // Record when Win/Loss was pressed. The column is only written
+            // when the migration has run, so the button still works on a
+            // database that has not been migrated yet.
+            $updates = ['admin_override' => $override];
+            if (Schema::hasColumn('trades', 'override_set_at')) {
+                $updates['override_set_at'] = $override === 'none' ? null : now();
+            }
+            $lockedTrade->update($updates);
 
             if (!AdminLog::record(
                 $action,

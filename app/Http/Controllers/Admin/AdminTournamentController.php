@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AdminLog;
 use App\Models\Tournament;
+use App\Models\TournamentRegistration;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Database\Schema\Blueprint;
@@ -148,6 +149,14 @@ class AdminTournamentController extends Controller
             $query->where('status', $request->status);
         }
 
+        if (Schema::hasTable('tournament_registrations')) {
+            $query->withCount('registrations');
+            $totalRegistrations = TournamentRegistration::count();
+        } else {
+            // Migration for tournament_registrations not run yet — don't break the list.
+            $totalRegistrations = 0;
+        }
+
         $tournaments = $query->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc')->paginate(20)->withQueryString();
 
         $totalCount = Tournament::count();
@@ -155,7 +164,32 @@ class AdminTournamentController extends Controller
         $completedCount = Tournament::where('status', 'completed')->count();
         $totalPrizePool = Tournament::sum('prize_pool');
 
-        return view('admin.tournaments.index', compact('tournaments', 'totalCount', 'activeCount', 'completedCount', 'totalPrizePool'));
+        return view('admin.tournaments.index', compact('tournaments', 'totalCount', 'activeCount', 'completedCount', 'totalPrizePool', 'totalRegistrations'));
+    }
+
+    /**
+     * Registrants (participants) of one tournament.
+     * Before this existed, the admin side only listed the tournaments
+     * themselves — there was no page at all that showed who registered.
+     */
+    public function show(Tournament $tournament)
+    {
+        $this->ensureTableExists();
+
+        if (!Schema::hasTable('tournament_registrations')) {
+            return redirect()->route('admin.tournaments.index')
+                ->with('error', 'Tournament registrations table is missing. Please run: php artisan migrate');
+        }
+
+        $registrations = $tournament->registrations()
+            ->with('user:id,name,email')
+            ->orderBy('created_at', 'desc')
+            ->paginate(50);
+
+        $totalRegistrations = $tournament->registrations()->count();
+        $totalEntryFees = $tournament->registrations()->sum('entry_fee_paid');
+
+        return view('admin.tournaments.show', compact('tournament', 'registrations', 'totalRegistrations', 'totalEntryFees'));
     }
 
     public function create()

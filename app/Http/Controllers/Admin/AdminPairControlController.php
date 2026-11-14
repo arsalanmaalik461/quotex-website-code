@@ -266,6 +266,7 @@ class AdminPairControlController extends Controller
                     'direction'  => $t->direction,
                     'investment' => (float)$t->investment,
                     'override'   => $t->admin_override,
+                    'account_type' => $t->account_type,
                 ])->take(5)->values(),
             ];
         }

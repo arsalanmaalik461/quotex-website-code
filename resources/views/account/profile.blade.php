@@ -42,7 +42,7 @@
     <div class="profile-page">
       <div class="account-page">
         <!-- Personal Data Form -->
-        <form class="profile-form" action="{{ route('profile.update') }}" method="POST">
+        <form class="profile-form" action="{{ route('profile.update') }}" method="POST" enctype="multipart/form-data">
           @csrf
           <div class="content-section__head">Personal data:</div>
 
@@ -50,7 +50,11 @@
             <div class="form-avatar">
               <div class="form-avatar__image-block">
                 <div class="form-avatar__photo">
-                  <span class="avatar-initials">{{ strtoupper(substr($user->name ?? 'A', 0, 1)) }}</span>
+                  @if($user->avatar)
+                    <img src="{{ asset($user->avatar) }}" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">
+                  @else
+                    <span class="avatar-initials">{{ strtoupper(substr($user->name ?? 'A', 0, 1)) }}</span>
+                  @endif
                   <input class="upload-control__input" type="file" name="file" title="Upload Avatar">
                 </div>
               </div>
@@ -75,7 +79,7 @@
             <div class="form-control-input__control">
               <label class="input-control-cabinet input-control-cabinet--text">
                 <span class="input-control-cabinet__label">Nickname</span>
-                <input name="nickname" class="input-control-cabinet__input" placeholder="#93090578" value="#93090578">
+                <input name="nickname" class="input-control-cabinet__input" placeholder="#{{ $user->id }}" value="{{ $user->nickname ?? '#'.$user->id }}">
               </label>
             </div>
 
@@ -89,14 +93,14 @@
             <div class="form-control-input__control">
               <label class="input-control-cabinet input-control-cabinet--text">
                 <span class="input-control-cabinet__label">Last Name</span>
-                <input name="last_name" class="input-control-cabinet__input" placeholder="Empty" value="">
+                <input name="last_name" class="input-control-cabinet__input" placeholder="Empty" value="{{ $user->last_name ?? '' }}">
               </label>
             </div>
 
             <div class="form-control-input__control">
               <label class="input-control-cabinet input-control-cabinet--text">
                 <span class="input-control-cabinet__label">Date of birth</span>
-                <input name="birthday" type="date" class="input-control-cabinet__input" value="">
+                <input name="birthday" type="date" class="input-control-cabinet__input" value="{{ $user->birthday ?? '' }}">
               </label>
             </div>
 
@@ -105,8 +109,12 @@
                 <span class="input-control-cabinet__label disabled">Email</span>
                 <input class="input-control-cabinet__input" disabled="" type="email" value="{{ $user->email }}">
                 <div class="input-control-cabinet__badge active">
-                  <div class="input-control-cabinet__status input-control-cabinet__status--danger">Unverified</div>
-                  <button type="button" class="input-control-cabinet__action" onclick="alert('Verification link sent to your email!')">Resend</button>
+                  @if($user->email_verified || $user->email_verified_at)
+                    <div class="input-control-cabinet__status" style="color:#00e676;">Verified</div>
+                  @else
+                    <div class="input-control-cabinet__status input-control-cabinet__status--danger">Unverified</div>
+                    <button type="button" class="input-control-cabinet__action" id="btn-resend-verification" onclick="resendVerificationEmail(this)">Resend</button>
+                  @endif
                 </div>
               </label>
             </div>
@@ -121,7 +129,7 @@
             <div class="form-control-input__control">
               <label class="input-control-cabinet input-control-cabinet--text">
                 <span class="input-control-cabinet__label">Address</span>
-                <input name="address" class="input-control-cabinet__input" placeholder="Empty" value="">
+                <input name="address" class="input-control-cabinet__input" placeholder="Empty" value="{{ $user->address ?? '' }}">
               </label>
             </div>
 
@@ -135,9 +143,9 @@
         <div class="verification-documents">
           <div class="content-section__head" style="display:flex; justify-content:space-between; align-items:center;">
             <span>Documents verification (KYC):</span>
-            <a href="{{ route('kyc.index') }}" style="font-size:13px; color:#00e676; text-decoration:none; font-weight:600;">
-              {{ ($userKyc && $userKyc->status === 'approved') ? 'View Documents →' : 'Complete Verification →' }}
-            </a>
+            @if($userKyc && $userKyc->status === 'approved')
+              <a href="{{ route('kyc.index') }}" style="font-size:13px; color:#00e676; text-decoration:none; font-weight:600;">View Documents →</a>
+            @endif
           </div>
           <div>
             @if($userKyc && $userKyc->status === 'approved')
@@ -183,7 +191,7 @@
           <div class="form__control">
             <div class="form__control form__control--distant">
               <label class="input-control-cabinet input-control-cabinet--toggle">
-                <input name="login_2fa" class="input-control-cabinet__checkbox" type="checkbox" checked>
+                <input name="login_2fa" class="input-control-cabinet__checkbox" type="checkbox" {{ ($user->login_2fa ?? false) ? 'checked' : '' }}>
                 <span class="toggle-slider-round"></span>
                 <span class="input-control-cabinet__label">To enter the platform</span>
               </label>
@@ -193,7 +201,7 @@
           <div class="form__control">
             <div class="form__control form__control--distant">
               <label class="input-control-cabinet input-control-cabinet--toggle">
-                <input name="withdrawal_2fa" class="input-control-cabinet__checkbox" type="checkbox" checked>
+                <input name="withdrawal_2fa" class="input-control-cabinet__checkbox" type="checkbox" {{ ($user->withdrawal_2fa ?? false) ? 'checked' : '' }}>
                 <span class="toggle-slider-round"></span>
                 <span class="input-control-cabinet__label">To withdraw funds</span>
               </label>
@@ -259,9 +267,13 @@
             </label>
           </div>
 
-          <button type="button" class="button--delete" onclick="confirm('Are you sure you want to delete your account?')">
-            Delete My account
-          </button>
+            <form action="{{ route('profile.delete') }}" method="POST" onsubmit="return confirm('Are you sure you want to delete your account? This cannot be undone.');">
+              @csrf
+              @method('DELETE')
+              <button type="submit" class="button--delete">
+                Delete My account
+              </button>
+            </form>
         </div>
       </div>
 
@@ -295,6 +307,44 @@
       region.style.display = isHidden ? 'block' : 'none';
       trigger.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
     }
+  }
+
+  // 2FA toggles: persist immediately when flipped.
+  document.querySelectorAll('input[name="login_2fa"], input[name="withdrawal_2fa"]').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      const token = document.querySelector('meta[name="csrf-token"]')?.content;
+      const body = {
+        login_2fa: document.querySelector('input[name="login_2fa"]')?.checked || false,
+        withdrawal_2fa: document.querySelector('input[name="withdrawal_2fa"]')?.checked || false,
+      };
+      fetch('{{ route('profile.two-factor') }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': token },
+        body: JSON.stringify(body),
+      }).catch(() => { cb.checked = !cb.checked; });
+    });
+  });
+
+  // Resend email verification: sends a real link, no fake alert.
+  function resendVerificationEmail(btn) {
+    const token = document.querySelector('meta[name="csrf-token"]')?.content;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    fetch('{{ route('profile.resend-verification') }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': token },
+      body: JSON.stringify({}),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.message || 'Failed to send.');
+        btn.textContent = 'Sent ✓';
+      })
+      .catch((err) => {
+        btn.disabled = false;
+        btn.textContent = 'Try again';
+        btn.title = err.message;
+      });
   }
 </script>
 @endsection

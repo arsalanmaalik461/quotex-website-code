@@ -581,6 +581,7 @@
 <div class="qx-modal-backdrop" id="t-modal" onclick="closeTournamentModal(event)">
   <div class="qx-modal-content" onclick="event.stopPropagation()">
     <button type="button" class="qx-modal-close" onclick="closeTournamentModal()">&times;</button>
+    <div id="t-modal-details">
     <div class="qx-modal-header-title" id="m-title">Tournament Details</div>
     <div style="color: #7d8ea9; font-size: 13px; line-height: 1.5; margin-bottom: 16px;" id="m-desc">
       Compete with other traders and climb the leaderboard. The highest balance at the end of the duration wins the prize pool!
@@ -614,6 +615,13 @@
     <button type="button" class="qx-modal-btn-participate" onclick="participateTournament()">
       Participate in Tournament
     </button>
+    </div>
+    <div id="t-modal-success" style="display: none; text-align: center;">
+      <div style="font-size: 44px; line-height: 1; margin-bottom: 14px;">✓</div>
+      <div class="qx-modal-header-title" style="text-align: center;">Registration Successful</div>
+      <div style="color: #7d8ea9; font-size: 13.5px; line-height: 1.6; margin-bottom: 24px;">You have successfully registered for the tournament! Head to Trade to participate.</div>
+      <a href="{{ route('trade') }}" class="qx-modal-btn-participate" style="display: block; text-decoration: none; text-align: center;">Go to Trade</a>
+    </div>
   </div>
 </div>
 
@@ -649,6 +657,8 @@
     } else {
       document.getElementById('m-desc').textContent = 'Compete with other traders and climb the leaderboard. The highest balance at the end of the duration wins the prize pool!';
     }
+    document.getElementById('t-modal-details').style.display = 'block';
+    document.getElementById('t-modal-success').style.display = 'none';
     document.getElementById('t-modal').style.display = 'flex';
   }
 
@@ -657,8 +667,8 @@
   }
 
   function participateTournament() {
-    alert('You have successfully registered for the tournament! Head to Trade to participate.');
-    closeTournamentModal();
+    document.getElementById('t-modal-details').style.display = 'none';
+    document.getElementById('t-modal-success').style.display = 'block';
   }
 </script>
 @endsection

@@ -190,7 +190,7 @@
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         </button>
 
-        <button type="button" class="sidebar-icon-mini" id="btn-toggle-sound" title="Sound Mute/Unmute">
+        <button type="button" class="sidebar-icon-mini" id="btn-toggle-sound" title="Sound On — click to mute" onclick="toggleSound()">
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
         </button>
 
@@ -655,16 +655,32 @@
           </button>
         </div>
 
-        <!-- Floating Green Trade Opened Toast (Screenshot Exact) -->
-        <div class="floating-green-toast" id="chart-trade-toast" style="display: none;">
-          <span id="toast-trade-text">Trade opened with price: 1341.55 AUD/CHF</span>
-          <button type="button" class="toast-dismiss-btn" onclick="document.getElementById('chart-trade-toast').style.display='none'">✕</button>
-        </div>
+        <!-- Floating Green Trade Opened Toasts (stacked, one per placed trade — real Quotex) -->
+        <div id="chart-trade-toasts" class="chart-trade-toasts"></div>
 
         <!-- Giant Faint Background Watermark DEMO -->
         <div class="chart-demo-watermark">DEMO</div>
 
         <div id="trade-chart" class="trade-chart-canvas"></div>
+        <div id="indicators-legend" class="indicators-legend" style="display:none;"></div>
+        <svg id="drawings-layer" class="drawings-layer"></svg>
+        <div id="drawings-capture" class="drawings-capture" style="display:none;"></div>
+        <div id="drawings-panel" class="drawings-panel" style="display:none;">
+          <div class="drawings-panel-header">
+            <span>Drawings</span>
+            <button type="button" class="drawings-panel-close" onclick="toggleDrawingsPanel(false)">✕</button>
+          </div>
+          <div class="drawings-list" id="drawings-list"></div>
+          <button type="button" class="drawings-delete-all" onclick="deleteAllDrawings()">🗑 Delete all</button>
+          <div class="drawings-section-title">Technical Indicators</div>
+          <div class="drawings-indicators">
+            <label class="indicator-option"><span>SMA (10)</span><input type="checkbox" id="chk-ind-sma"></label>
+            <label class="indicator-option"><span>EMA (20)</span><input type="checkbox" id="chk-ind-ema"></label>
+            <label class="indicator-option"><span>Bollinger Bands</span><input type="checkbox" id="chk-ind-bollinger"></label>
+            <label class="indicator-option"><span>RSI (14)</span><input type="checkbox" id="chk-ind-rsi"></label>
+          </div>
+          <div class="drawings-hint" id="drawings-hint" style="display:none;"></div>
+        </div>
 
         <!-- Floating Bottom-Left Chart Tools (Pencil, Timeframe 1m, Candles, Crosshair) -->
         <div class="chart-floating-tools-left">
@@ -672,12 +688,6 @@
             <button type="button" class="chart-float-btn" id="btn-indicators-toggle" title="Drawing / Indicators">
               <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
             </button>
-            <div class="indicators-dropdown" id="indicators-dropdown">
-              <div class="indicators-dropdown-header">Technical Indicators</div>
-              <label class="indicator-option"><span>SMA (10)</span><input type="checkbox" id="chk-ind-sma"></label>
-              <label class="indicator-option"><span>EMA (20)</span><input type="checkbox" id="chk-ind-ema"></label>
-              <label class="indicator-option"><span>Bollinger Bands</span><input type="checkbox" id="chk-ind-bollinger"></label>
-            </div>
           </div>
 
           <div class="chart-tool-pop-wrap">
@@ -895,14 +905,14 @@
       <!-- Big Action Buttons (UP / DOWN with round arrow badge) -->
       <div class="trade-buttons-row">
         <button type="button" class="btn-trade btn-call" id="btn-up">
-          <span class="btn-trade-title">Up</span>
+          <span class="btn-trade-title">Buy</span>
           <span class="trade-btn-circle-arrow">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
           </span>
         </button>
 
         <button type="button" class="btn-trade btn-put" id="btn-down">
-          <span class="btn-trade-title">Down</span>
+          <span class="btn-trade-title">Sell</span>
           <span class="trade-btn-circle-arrow">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
           </span>
@@ -978,7 +988,7 @@
               </div>
             @empty
               <div class="empty-trades-quotex-box" id="empty-history-msg" style="{{ count($activeTrades ?? []) > 0 ? 'display:none;' : '' }}">
-                <p>No trade history yet</p>
+                <p>You don't have a trade history yet. You can open a trade using the form above.</p>
               </div>
             @endforelse
           </div>
@@ -1804,12 +1814,13 @@
           <div class="DtLeD settings-block">
             <p class="JTI5P settings-sub-title">Background</p>
             <label class="Q0zrU bg-upload-label">
-              <input class="n5q53" type="file" accept="image/*" onchange="alert('Background image updated!')" style="display:none;">
+              <input class="n5q53" type="file" accept="image/*" onchange="handleChartBackgroundUpload(this)" style="display:none;">
               <div class="kI6KL">
                 <div class="pV2Zn">Choose file</div>
                 <div class="zShVT">(Max size — 2 Mb)</div>
               </div>
             </label>
+            <button type="button" id="btn-remove-chart-bg" class="bg-remove-btn" onclick="removeChartBackground()" style="display:none;">Remove background</button>
           </div>
         </div>
       </div>
@@ -1882,6 +1893,18 @@
 
   <!-- TOAST NOTIFICATION -->
   <div id="trade-toast" class="trade-toast">
+
+  <!-- Trade confirm modal (shown when 1-click trade is OFF instead of a native confirm()) -->
+  <div id="trade-confirm-modal" class="trade-confirm-backdrop" style="display:none;">
+    <div class="trade-confirm-box">
+      <div class="trade-confirm-title">Confirm trade</div>
+      <p id="trade-confirm-text" class="trade-confirm-text"></p>
+      <div class="trade-confirm-actions">
+        <button type="button" class="trade-confirm-btn cancel" onclick="closeTradeConfirm()">Cancel</button>
+        <button type="button" class="trade-confirm-btn ok" onclick="confirmTradePlacement()">Confirm</button>
+      </div>
+    </div>
+  </div>
     <div class="toast-title">Notification</div>
     <div class="toast-body">Message here</div>
   </div>
