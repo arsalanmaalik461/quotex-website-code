@@ -2796,6 +2796,9 @@
   const MAX_TRADE_INVESTMENT = 1000;
 
   function placeTrade(direction) {
+    // Placing a trade (or opening the confirm) ends the hover preview —
+    // once a trade is placed the chart goes back to normal.
+    hideHoverShade();
     // 1-click trade OFF → ask first with the in-app confirm (no native dialog).
     if (!state.settings.oneClick) {
       showTradeConfirm(direction);
@@ -2919,6 +2922,14 @@
 
   el.btnUp?.addEventListener('click', () => placeTrade('up'));
   el.btnDown?.addEventListener('click', () => placeTrade('down'));
+
+  // Hover preview (real Quotex): while the cursor is on Buy, tint the area
+  // above the current price green; on Sell, the area below it red. Moving
+  // the mouse away removes the tint again.
+  el.btnUp?.addEventListener('mouseenter', () => showHoverShade('up'));
+  el.btnUp?.addEventListener('mouseleave', () => hideHoverShade());
+  el.btnDown?.addEventListener('mouseenter', () => showHoverShade('down'));
+  el.btnDown?.addEventListener('mouseleave', () => hideHoverShade());
 
   // --- Pending Trade Modal Window (Screenshot 2 & 3) ---
   function updatePendingPriceLine(price) {
@@ -3324,13 +3335,67 @@
   refreshPendingOrders();
 
   // --- Quotex Exact On-Chart Active Trade Rays & Countdown Pills (Image 1 Exact) ---
+  // --- Hover preview shading (real Quotex behaviour) ---
+  // No persistent tint while a trade is open: once a trade is placed the
+  // chart goes back to normal. Instead, hovering the Buy button tints the
+  // area above the CURRENT price green, and hovering Sell tints the area
+  // below it red — a preview of the win zone. Moving the mouse away, or
+  // placing the trade, removes it. positionHoverShade() is called from the
+  // 250 ms overlay tick so the tint edge follows the live price while
+  // hovering. The shade reuses the .chart-trade-shade colours.
+  function positionHoverShade() {
+    const container = document.getElementById('chart-active-trades-container');
+    let shade = document.getElementById('chart-hover-shade');
+    if (!state.hoverDirection || !container || !state.series || !state.chart ||
+        state.currentPrice === null || state.currentPrice === undefined) {
+      if (shade) shade.style.display = 'none';
+      return;
+    }
+    if (!shade) {
+      shade = document.createElement('div');
+      shade.id = 'chart-hover-shade';
+      container.appendChild(shade);
+    }
+    let y = null;
+    try { y = state.series.priceToCoordinate(state.currentPrice); } catch (e) {}
+    if (y === null || isNaN(y)) { shade.style.display = 'none'; return; }
+    shade.className = `chart-trade-shade ${state.hoverDirection === 'up' ? 'up' : 'down'}`;
+    shade.style.display = 'block';
+    if (state.hoverDirection === 'up') {
+      shade.style.top = '0px';
+      shade.style.bottom = 'auto';
+      shade.style.height = `${Math.max(0, Math.round(y))}px`;
+    } else {
+      shade.style.top = `${Math.round(y)}px`;
+      shade.style.bottom = '0px';
+      shade.style.height = 'auto';
+    }
+  }
+
+  function showHoverShade(direction) {
+    state.hoverDirection = direction;
+    positionHoverShade();
+  }
+
+  function hideHoverShade() {
+    state.hoverDirection = null;
+    const shade = document.getElementById('chart-hover-shade');
+    if (shade) shade.style.display = 'none';
+  }
+
   function updateChartTradesOverlay() {
     const container = document.getElementById('chart-active-trades-container');
     const overlay = document.getElementById('trade-marker-lines-overlay');
     if (!container || !state.series || !state.chart) return;
 
+    // Keep the hover preview tracking the live price on every tick.
+    positionHoverShade();
+
+    // The hover preview shade lives in this same container, so clear only
+    // trade items (plus any stale per-trade shades from the old behaviour),
+    // never the whole container.
     if (!state.activeTrades || state.activeTrades.length === 0) {
-      container.innerHTML = '';
+      container.querySelectorAll('.chart-trade-item, [id^="chart-trade-shade-"]').forEach(el => el.remove());
       if (overlay && (!document.getElementById('pending-checkbox')?.checked)) {
         overlay.classList.remove('active');
       }
@@ -3404,35 +3469,11 @@
 
       if (y === null || isNaN(y)) {
         item.style.display = 'none';
-        const oldShade = document.getElementById(`chart-trade-shade-${trade.trade_id}`);
-        if (oldShade) oldShade.style.display = 'none';
         return;
       }
       item.style.display = 'flex';
       item.style.top = `${Math.round(y)}px`;
 
-      // Trade zone shading (real Quotex): a Buy tints the chart above the
-      // entry line green, a Sell tints it below the entry line red. The
-      // tint follows the entry price as the chart moves (this function
-      // runs every 250 ms while trades are active) and disappears with
-      // the trade — no active trade, no shading.
-      let shade = document.getElementById(`chart-trade-shade-${trade.trade_id}`);
-      if (!shade) {
-        shade = document.createElement('div');
-        shade.id = `chart-trade-shade-${trade.trade_id}`;
-        container.appendChild(shade);
-      }
-      shade.className = `chart-trade-shade ${trade.direction}`;
-      shade.style.display = 'block';
-      if (trade.direction === 'up') {
-        shade.style.top = '0px';
-        shade.style.bottom = 'auto';
-        shade.style.height = `${Math.max(0, Math.round(y))}px`;
-      } else {
-        shade.style.top = `${Math.round(y)}px`;
-        shade.style.bottom = '0px';
-        shade.style.height = 'auto';
-      }
       // Horizontal span: from the trade's own entry candle to its expiry.
       // Never clamp to a fixed guide-line position — that was the bug that
       // drew every line at 65% of the chart instead of where the trade
@@ -3500,7 +3541,7 @@
         el.remove();
       }
     });
-    container.querySelectorAll('.chart-trade-shade').forEach(el => {
+    container.querySelectorAll('.chart-trade-shade:not(#chart-hover-shade)').forEach(el => {
       if (!activeIds.has('chart-trade-' + el.id.replace('chart-trade-shade-', ''))) {
         el.remove();
       }

@@ -3081,9 +3081,11 @@ select.input-control__select option {
   z-index: 12;
 }
 
-/* Trade zone shading (real Quotex): Buy tints the chart above the entry
-   line green, Sell tints it below the line red. Translucent so the
-   candles stay visible through it; no active trade, no shading. */
+/* Trade zone shading (real Quotex): a HOVER preview only — hovering Buy
+   tints the chart above the current price green, hovering Sell tints the
+   area below it red. There is no persistent tint while a trade is open:
+   once a trade is placed the chart goes back to normal. Translucent so
+   the candles stay visible through it. */
 .chart-trade-shade {
   position: absolute;
   left: 0;
