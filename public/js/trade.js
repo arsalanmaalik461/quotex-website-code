@@ -3826,6 +3826,14 @@
     state.drawingPoints = [];
     saveDrawings();
     renderDrawings();
+    // "Delete all" sits in the panel that holds both drawings and the
+    // indicator checkboxes, so it must clear the indicators too — otherwise
+    // every indicator line stays on the chart after pressing it, which is
+    // what the user reported on the live site.
+    INDICATOR_KEYS.forEach(k => { state.indicators[k] = false; });
+    saveIndicators();
+    syncIndicatorCheckboxes();
+    updateIndicators();
   };
 
   function buildDrawingsList() {
