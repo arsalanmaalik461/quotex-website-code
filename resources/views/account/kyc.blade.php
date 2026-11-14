@@ -354,6 +354,57 @@
   font-weight: 600;
   color: #cfd8dc;
 }
+
+/* Centered in-app alert modal (Team H — replaces native alert()). */
+.kyc-alert-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.kyc-alert-box {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: #171d2b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.kyc-alert-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.kyc-alert-text {
+  font-size: 13px;
+  color: #8593a8;
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+
+.kyc-alert-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.kyc-alert-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #00c853;
+  color: #000;
+}
 </style>
 @endpush
 
@@ -616,6 +667,17 @@
 
 </div>
 
+  <!-- In-app alert modal (Team H — replaces native alert()). -->
+  <div id="kyc-alert-modal" class="kyc-alert-backdrop" style="display:none;">
+    <div class="kyc-alert-box">
+      <div class="kyc-alert-title" id="kyc-alert-title">Notice</div>
+      <p class="kyc-alert-text" id="kyc-alert-text"></p>
+      <div class="kyc-alert-actions">
+        <button type="button" class="kyc-alert-btn" onclick="closeKycAlert()">OK</button>
+      </div>
+    </div>
+  </div>
+
 @push('scripts')
 <script>
   // Image preview helper for ID front & back
@@ -644,9 +706,26 @@
   const dataInput = document.getElementById('live_selfie_data');
   const statusIndicator = document.getElementById('selfie-status-indicator');
 
+  // Centered in-app alert (Team H) — same pattern as the trade-page
+  // modals; used instead of native alert().
+  function showKycAlert(title, message) {
+    const modal = document.getElementById('kyc-alert-modal');
+    const titleEl = document.getElementById('kyc-alert-title');
+    const textEl = document.getElementById('kyc-alert-text');
+    if (!modal || !textEl) return;
+    if (titleEl) titleEl.textContent = title || 'Notice';
+    textEl.textContent = message || '';
+    modal.style.display = 'flex';
+  }
+
+  function closeKycAlert() {
+    const modal = document.getElementById('kyc-alert-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
   async function startFrontCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      alert('Camera access is not supported by your browser. Please use the direct front camera link below.');
+      showKycAlert('Camera not supported', 'Camera access is not supported by your browser. Please use the direct front camera link below.');
       document.getElementById('live_selfie_file').click();
       return;
     }
@@ -692,7 +771,7 @@
         btnCapture.style.display = 'inline-flex';
         btnRetake.style.display = 'none';
       } catch (fallbackErr) {
-        alert('Could not access front camera: ' + err.message + '. Please check camera permissions or use the direct camera capture option.');
+        showKycAlert('Camera access failed', 'Could not access front camera: ' + err.message + '. Please check camera permissions or use the direct camera capture option.');
         document.getElementById('live_selfie_file').click();
       }
     }
@@ -700,7 +779,7 @@
 
   function captureSelfie() {
     if (!video || !video.videoWidth) {
-      alert('Camera stream is not ready yet. Please wait a second and try again.');
+      showKycAlert('Camera not ready', 'Camera stream is not ready yet. Please wait a second and try again.');
       return;
     }
 
@@ -785,7 +864,7 @@
 
       if (!hasSelfie) {
         e.preventDefault();
-        alert('Please take a live selfie using your front camera before submitting.');
+        showKycAlert('Selfie required', 'Please take a live selfie using your front camera before submitting.');
         document.getElementById('camera-wrap').scrollIntoView({ behavior: 'smooth' });
         return false;
       }

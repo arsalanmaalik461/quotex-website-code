@@ -118,6 +118,61 @@
   cursor: pointer;
 }
 
+/* Real date-range inputs (native date pickers) + Apply/Clear. */
+.date-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.date-range-inputs input[type="date"] {
+  background: #171d2b;
+  border: 1px solid #232d3f;
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+  padding: 7px 10px;
+  color-scheme: dark;
+}
+
+.date-range-inputs input[type="date"]:focus {
+  border-color: #026FD3;
+}
+
+.date-range-sep {
+  color: #63738e;
+  font-size: 13px;
+}
+
+.date-range-apply-btn {
+  background: #026FD3;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.date-range-apply-btn:hover {
+  background: #007bf8;
+}
+
+.date-range-clear-btn {
+  color: #8fa0b5;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.date-range-clear-btn:hover {
+  color: #fff;
+}
+
 /* Account selector */
 .tc1BY {
   position: relative;
@@ -596,20 +651,33 @@
     <!-- Filter row: Date Range, Account Type, Export, Pagination -->
     <div class="K6V4a">
       <div class="K6V4a-left">
-        <!-- Date Range Filter -->
-        <div class="date-picker-range__root">
+        <!-- Date Range Filter: two real date inputs that submit
+             startDate/endDate to the backend (which already filters
+             on them). The old readonly text input had no datepicker
+             and no way to set the dates at all. -->
+        <form method="GET" action="{{ route('trades') }}" class="date-picker-range__root">
+          <input type="hidden" name="account" value="{{ $accountType ?? 'demo' }}">
           <div class="date-picker-range__container">
             <div class="date-picker-range__label">
               Date Range:
             </div>
-            <div class="react-datepicker-wrapper">
-              <div class="react-datepicker__input-container">
-                <input type="text" id="dateRangeInput" readonly 
-                  value="{{ ($startDate ?? '') && ($endDate ?? '') ? \Carbon\Carbon::parse($startDate)->format('d.m.Y') . ' - ' . \Carbon\Carbon::parse($endDate)->format('d.m.Y') : now()->subYear()->format('d.m.Y') . ' - ' . now()->format('d.m.Y') }}">
-              </div>
+            <div class="date-range-inputs">
+              <input type="date" id="startDateInput" name="startDate"
+                value="{{ $startDate ?? '' }}"
+                max="{{ now()->format('Y-m-d') }}"
+                aria-label="Start date">
+              <span class="date-range-sep">–</span>
+              <input type="date" id="endDateInput" name="endDate"
+                value="{{ $endDate ?? '' }}"
+                max="{{ now()->format('Y-m-d') }}"
+                aria-label="End date">
             </div>
+            <button type="submit" class="date-range-apply-btn">Apply</button>
+            @if(($startDate ?? '') || ($endDate ?? ''))
+              <a href="{{ route('trades', ['account' => $accountType ?? 'demo']) }}" class="date-range-clear-btn">Clear</a>
+            @endif
           </div>
-        </div>
+        </form>
 
         <!-- Account Type Dropdown -->
         <div class="tc1BY">

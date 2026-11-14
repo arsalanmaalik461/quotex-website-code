@@ -9,6 +9,7 @@ use App\Models\Trade;
 use App\Models\PaymentMethod;
 use App\Models\Tournament;
 use App\Models\PromoCode;
+use App\Models\MarketPurchase;
 use App\Models\User;
 use App\Services\TradeResultService;
 use App\Services\VerificationCodeService;
@@ -127,7 +128,11 @@ class AccountController extends Controller
     public function processDeposit(Request $request)
     {
         $request->validate([
-            'amount'            => 'required|numeric|min:5',
+            // The real floor is per-method (see the check below):
+            // $10 for most methods, $50 for major crypto methods.
+            // A flat min:5 here would let a $30 crypto deposit past
+            // validation before the method is even resolved.
+            'amount'            => 'required|numeric|min:1',
             'method'            => 'required|string',
             'payment_method_id' => 'required|integer',
             'payment_category_id' => 'nullable|integer',
@@ -166,6 +171,13 @@ class AccountController extends Controller
             return back()->withInput()->withErrors(['method' => 'Selected payment method is unavailable.']);
         }
 
+        // The submitted method name must be the resolved method's
+        // name — a free-text method that matches no PaymentMethod row
+        // is rejected instead of being stored.
+        if (strtolower(trim((string) $request->input('method'))) !== strtolower(trim((string) $paymentMethod->name))) {
+            return back()->withInput()->withErrors(['method' => 'Selected payment method is unavailable. Please choose a payment method from the list.']);
+        }
+
         if ($request->integer('payment_category_id') > 0 && Schema::hasTable('payment_categories') && Schema::hasTable('payment_category_method')) {
             $categoryIsValid = PaymentCategory::active()
                 ->shownOnDeposit()
@@ -182,8 +194,17 @@ class AccountController extends Controller
             }
         }
 
-        if ($amount < (float) $paymentMethod->min_amount || $amount > (float) $paymentMethod->max_amount) {
-            return back()->withInput()->withErrors(['amount' => 'Amount is outside the allowed limit for this method.']);
+        // Per-method minimum, enforced server-side: the admin-set
+        // min_amount column where set, floored at $10 ($50 for major
+        // crypto methods) — PaymentMethod::effectiveMinAmount().
+        // The message names the method and its minimum so the user
+        // knows exactly why a deposit was rejected.
+        $minAmount = $paymentMethod->effectiveMinAmount();
+        if ($amount < $minAmount) {
+            return back()->withInput()->withErrors(['amount' => 'The minimum deposit for ' . $paymentMethod->name . ' is $' . number_format($minAmount, 2) . '. Please enter at least $' . number_format($minAmount, 2) . '.']);
+        }
+        if ($amount > (float) $paymentMethod->max_amount) {
+            return back()->withInput()->withErrors(['amount' => 'The maximum deposit for ' . $paymentMethod->name . ' is $' . number_format((float) $paymentMethod->max_amount, 2) . '.']);
         }
 
         // Promo code (typed on this page or carried in via ?promo=): a code
@@ -309,7 +330,13 @@ class AccountController extends Controller
             ->limit(10)
             ->get();
 
-        return view('account.withdrawal', compact('user', 'methods', 'recentTransactions', 'isVerified', 'emailVerified'));
+        // Same-day withdrawal count, for the 3% fee rule: the first 2
+        // withdrawals created today are fee-free; the 3rd and every
+        // later one today is charged 3%. The view uses this to show
+        // the fee preview before the user submits.
+        $withdrawalsToday = self::countWithdrawalsToday($user->id);
+
+        return view('account.withdrawal', compact('user', 'methods', 'recentTransactions', 'isVerified', 'emailVerified', 'withdrawalsToday'));
     }
 
     public function processWithdrawal(Request $request)
@@ -329,8 +356,11 @@ class AccountController extends Controller
         }
 
         $validated = $request->validate([
-            'amount'            => 'required|numeric|min:10',
+            // The real floor is per-method (see the check below):
+            // $10 for most methods, $50 for major crypto methods.
+            'amount'            => 'required|numeric|min:1',
             'method'            => 'required|string',
+            'payment_method_id' => 'nullable|integer',
             'purse'             => 'nullable|string|max:255',
             'destination'       => 'nullable|string|max:255',
             'first_name'        => 'nullable|string|max:100',
@@ -338,6 +368,26 @@ class AccountController extends Controller
             'receive_type'      => 'nullable|string|max:100',
             'verification_code' => 'nullable|string|max:10',
         ]);
+
+        // Method must be a real PaymentMethod row — no free-text
+        // method is accepted. Resolved by id when the form sends one,
+        // otherwise by exact (case-insensitive) name, among active
+        // withdrawal methods only.
+        $paymentMethod = $this->resolveWithdrawalMethod($request);
+        if (!$paymentMethod) {
+            return back()->withInput()->withErrors(['method' => 'Selected payment method is unavailable. Please choose a payment method from the list.']);
+        }
+
+        // Per-method minimum, enforced server-side: the admin-set
+        // min_amount column where set, floored at $10 ($50 for major
+        // crypto methods) — PaymentMethod::effectiveMinAmount().
+        $minAmount = $paymentMethod->effectiveMinAmount();
+        if ((float) $validated['amount'] < $minAmount) {
+            return back()->withInput()->withErrors(['amount' => 'The minimum withdrawal for ' . $paymentMethod->name . ' is $' . number_format($minAmount, 2) . '. Please enter at least $' . number_format($minAmount, 2) . '.']);
+        }
+        if ((float) $validated['amount'] > (float) $paymentMethod->max_amount) {
+            return back()->withInput()->withErrors(['amount' => 'The maximum withdrawal for ' . $paymentMethod->name . ' is $' . number_format((float) $paymentMethod->max_amount, 2) . '.']);
+        }
 
         // Withdrawal 2FA: when enabled, the same emailed 6-digit code
         // used at sign-in must accompany the request. First submit
@@ -365,8 +415,8 @@ class AccountController extends Controller
             return back()->withErrors(['purse' => 'Please provide destination account/purse number.']);
         }
 
-        $amount = $validated['amount'];
-        $notes = 'Withdrawal via ' . $validated['method'];
+        $amount = (float) $validated['amount'];
+        $notes = 'Withdrawal via ' . $paymentMethod->name;
         if ($request->filled('first_name') || $request->filled('last_name')) {
             $notes .= ' | Name: ' . trim($request->first_name . ' ' . $request->last_name);
         }
@@ -374,26 +424,56 @@ class AccountController extends Controller
             $notes .= ' | Type: ' . $request->receive_type;
         }
 
-        $created = DB::transaction(function () use ($amount, $destination, $notes, $validated) {
+        // 3% fee from the 3rd same-day withdrawal (server-side, so it
+        // cannot be bypassed from the client): the count is taken
+        // inside the transaction, under the user lock, so two requests
+        // racing each other cannot both slip in as "2nd withdrawal".
+        // The full requested amount is debited from the live balance;
+        // the fee is deducted from the amount actually sent.
+        $chargedFee = 0.0;
+        $created = DB::transaction(function () use ($amount, $destination, $notes, $paymentMethod, &$chargedFee) {
             $user = User::whereKey(Auth::id())->lockForUpdate()->firstOrFail();
 
             if (Money::greaterThan($amount, $user->live_balance ?? 0)) {
                 return null;
             }
 
+            $priorToday = self::countWithdrawalsToday($user->id);
+            $withdrawalNumber = $priorToday + 1;
+            $fee = self::withdrawalFee($amount, $priorToday);
+            $chargedFee = $fee;
+            $net = round($amount - $fee, 2);
+
             $user->live_balance = Money::subtract($user->live_balance, $amount);
             $user->save();
 
-            return Transaction::create([
+            $txNotes = $notes;
+            if ($fee > 0) {
+                $txNotes .= ' | 3% fee: $' . number_format($fee, 2) . ' (withdrawal #' . $withdrawalNumber . ' today; first 2 same-day withdrawals are fee-free). Amount to send: $' . number_format($net, 2) . '.';
+            }
+
+            $data = [
                 'user_id'        => $user->id,
                 'account_type'   => 'live',
                 'type'           => 'withdrawal',
                 'amount'         => $amount,
-                'method'         => $validated['method'],
+                'method'         => $paymentMethod->name,
+                'payment_method_id' => $paymentMethod->id,
                 'wallet_address' => $destination,
                 'status'         => 'pending',
-                'notes'          => $notes,
-            ]);
+                'notes'          => $txNotes,
+            ];
+            // Guarded so the request still works on a server where
+            // the fee migration has not run yet (fee then lives in
+            // the notes only, and is 0 in the columns once migrated).
+            if (Schema::hasColumn('transactions', 'fee_amount')) {
+                $data['fee_amount'] = $fee;
+            }
+            if (Schema::hasColumn('transactions', 'net_amount')) {
+                $data['net_amount'] = $net;
+            }
+
+            return Transaction::create($data);
         });
 
         if (!$created) {
@@ -401,7 +481,71 @@ class AccountController extends Controller
             return back()->withErrors(['amount' => 'Insufficient live balance. You currently have $' . number_format((float) ($user->live_balance ?? 0), 2) . ' available.']);
         }
 
-        return redirect()->route('withdrawal')->with('success', 'Withdrawal request of $' . number_format($amount, 2) . ' submitted! It will be sent after admin approval.');
+        $fee = $chargedFee;
+        $net = $fee > 0 ? round($amount - $fee, 2) : $amount;
+        $success = 'Withdrawal request of $' . number_format($amount, 2) . ' submitted! It will be sent after admin approval.';
+        if ($fee > 0) {
+            $success .= ' A 3% fee of $' . number_format($fee, 2) . ' applies (3rd or later withdrawal today), so $' . number_format($net, 2) . ' will be sent to you.';
+        }
+
+        return redirect()->route('withdrawal')->with('success', $success);
+    }
+
+    /**
+     * Withdrawal fee rule (real Quotex / withdrawal-page FAQ): the
+     * first 2 withdrawals created on the same day are fee-free; the
+     * 3rd and every later same-day withdrawal is charged 3% of the
+     * requested amount, deducted from the amount sent.
+     */
+    public const WITHDRAWAL_FEE_RATE = 0.03;
+    public const FREE_WITHDRAWALS_PER_DAY = 2;
+
+    /** Withdrawals this user has created today (any status). */
+    public static function countWithdrawalsToday(int $userId): int
+    {
+        return Transaction::where('user_id', $userId)
+            ->where('type', 'withdrawal')
+            ->whereDate('created_at', today())
+            ->count();
+    }
+
+    /** Fee for a withdrawal, given how many the user already made today. */
+    public static function withdrawalFee(float $amount, int $priorWithdrawalsToday): float
+    {
+        if ($priorWithdrawalsToday < self::FREE_WITHDRAWALS_PER_DAY) {
+            return 0.0;
+        }
+
+        return round($amount * self::WITHDRAWAL_FEE_RATE, 2);
+    }
+
+    /**
+     * Resolve the withdrawal's payment method against real
+     * PaymentMethod rows (active, withdrawal/both). By id when the
+     * form sends payment_method_id, otherwise by exact name
+     * (case-insensitive) — the form's select currently posts names.
+     * Returns null when no real row matches (free-text rejected).
+     */
+    private function resolveWithdrawalMethod(Request $request): ?PaymentMethod
+    {
+        if (!Schema::hasTable('payment_methods')) {
+            return null;
+        }
+
+        $query = PaymentMethod::active()->withdrawals();
+
+        if ($request->filled('payment_method_id')) {
+            return (clone $query)->where('id', $request->integer('payment_method_id'))->first();
+        }
+
+        $name = strtolower(trim((string) $request->input('method', '')));
+        if ($name === '') {
+            return null;
+        }
+
+        return $query->get()->first(
+            fn (PaymentMethod $method) => strtolower(trim($method->name)) === $name
+        );
     }
 
     public function history(Request $request)
@@ -476,12 +620,49 @@ class AccountController extends Controller
     {
         $user = $this->ensureAuth();
 
-        $transactions = Transaction::where('user_id', $user->id)
+        // Filters (all optional, GET so they survive pagination via
+        // withQueryString): type, status, date range, free-text
+        // search over method / notes / provider reference.
+        $type = $request->query('type', '');
+        $status = $request->query('status', '');
+        $from = $request->query('from', '');
+        $to = $request->query('to', '');
+        $search = trim((string) $request->query('q', ''));
+
+        $allowedTypes = ['deposit', 'withdrawal', 'bonus', 'tournament_entry'];
+        $allowedStatuses = ['pending', 'processing', 'approved', 'rejected', 'failed'];
+
+        $query = Transaction::where('user_id', $user->id);
+
+        if (in_array($type, $allowedTypes, true)) {
+            $query->where('type', $type);
+        }
+        if (in_array(strtolower($status), $allowedStatuses, true)) {
+            $query->where('status', strtolower($status));
+        }
+        if ($from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+            $query->whereDate('created_at', '>=', $from);
+        }
+        if ($to !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+            $query->whereDate('created_at', '<=', $to);
+        }
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('method', 'like', '%' . $search . '%')
+                    ->orWhere('notes', 'like', '%' . $search . '%')
+                    ->orWhere('provider_reference', 'like', '%' . $search . '%')
+                    ->orWhere('transaction_id', 'like', '%' . $search . '%');
+            });
+        }
+
+        $transactions = $query
             ->latest()
             ->paginate(15)
             ->withQueryString();
 
-        return view('account.transactions', compact('user', 'transactions'));
+        $filters = ['type' => $type, 'status' => $status, 'from' => $from, 'to' => $to, 'q' => $search];
+
+        return view('account.transactions', compact('user', 'transactions', 'filters'));
     }
 
     public function pendingTrades(Request $request)
@@ -526,54 +707,288 @@ class AccountController extends Controller
             }
         }
 
-        if (Schema::hasTable('promo_codes') && PromoCode::count() === 0) {
-            // Seed initial Quotex promo codes
-            PromoCode::create([
-                'code'         => 'DEPOSIT50',
-                'category'     => 'deposit_bonus',
-                'reward_type'  => 'percentage',
-                'reward_value' => 50.00,
-                'min_deposit'  => 50.00,
-                'expires_at'   => '2030-10-29 23:59:59',
-                'is_unlimited' => false,
-                'is_active'    => true,
-                'sort_order'   => 1,
-                'description'  => 'Receive a 50% extra bonus on your deposit.',
-            ]);
-
-            PromoCode::create([
-                'code'         => 'WELCOME50',
-                'category'     => 'deposit_bonus',
-                'reward_type'  => 'percentage',
-                'reward_value' => 50.00,
-                'min_deposit'  => 10.00,
-                'expires_at'   => null,
-                'is_unlimited' => true,
-                'is_active'    => true,
-                'sort_order'   => 2,
-                'description'  => 'Welcome 50% deposit bonus for all traders.',
-            ]);
-
-            PromoCode::create([
-                'code'         => 'DEPOSIT40',
-                'category'     => 'deposit_bonus',
-                'reward_type'  => 'percentage',
-                'reward_value' => 40.00,
-                'min_deposit'  => 30.00,
-                'expires_at'   => '2030-10-29 23:59:59',
-                'is_unlimited' => false,
-                'is_active'    => true,
-                'sort_order'   => 3,
-                'description'  => 'Receive a 40% extra bonus on your deposit.',
-            ]);
-        }
+        $this->seedMarketPromoCodes();
 
         $activePromos = collect([]);
         if (Schema::hasTable('promo_codes')) {
             $activePromos = PromoCode::active()->get()->groupBy('category');
         }
 
-        return view('account.market', compact('user', 'activePromos'));
+        // Promo codes this user already bought (Buy button shows "Owned").
+        $ownedPromoIds = [];
+        if (Schema::hasTable('market_purchases')) {
+            $ownedPromoIds = MarketPurchase::where('user_id', $user->id)
+                ->pluck('promo_code_id')->all();
+        }
+
+        return view('account.market', compact('user', 'activePromos', 'ownedPromoIds'));
+    }
+
+    /**
+     * Make sure every Market category has items.
+     *
+     * The old seed ran only when the table was completely empty and only
+     * created three deposit_bonus codes, so on a fresh install 5 of the 6
+     * cards were empty — and on an existing install (where the three
+     * deposit codes already exist) the other categories never appeared at
+     * all. This is idempotent: firstOrCreate by code, so existing rows
+     * (including admin edits) are never overwritten, and the price is
+     * backfilled only where it was never set (NULL, i.e. rows created
+     * before the price column existed).
+     */
+    private function seedMarketPromoCodes(): void
+    {
+        if (!Schema::hasTable('promo_codes')) {
+            try {
+                \Illuminate\Support\Facades\Artisan::call('migrate', ['--force' => true]);
+            } catch (\Throwable $e) {
+            }
+        }
+
+        if (!Schema::hasTable('promo_codes')) {
+            return;
+        }
+
+        $hasPriceColumn = Schema::hasColumn('promo_codes', 'price');
+
+        foreach (PromoCode::seedDefinitions() as $definition) {
+            $code = $definition['code'];
+            unset($definition['code']);
+
+            PromoCode::firstOrCreate(['code' => $code], $definition);
+
+            if ($hasPriceColumn) {
+                PromoCode::where('code', $code)->whereNull('price')
+                    ->update(['price' => $definition['price'] ?? 0]);
+            }
+        }
+    }
+
+    /**
+     * Buy a Market item (a promo code) with the LIVE balance.
+     *
+     * POST /market/purchase { promo_code_id, idempotency_key }.
+     *
+     * Flow: validate the code is still active, check funds, then inside
+     * one DB transaction with the user row locked: re-check the
+     * idempotency key (a rapid double-click replays the same key and the
+     * second submit returns the first purchase instead of charging
+     * again), reject a second purchase of the same code by the same user
+     * (409), re-check funds under the lock, deduct the price from the
+     * LIVE balance, record a `market_purchase` transaction, grant what
+     * the item promises (see grantMarketPurchase()), and store the
+     * purchase row. The price is read from the ITEM, never from the
+     * request — a client cannot set its own price.
+     *
+     * This is a purchase guard only: trade Buy/Sell stays unguarded per
+     * the user's rule (rapid repeat trades are intentional).
+     */
+    public function purchasePromo(Request $request)
+    {
+        $user = $this->ensureAuth();
+
+        if (!Schema::hasTable('market_purchases')) {
+            try {
+                \Illuminate\Support\Facades\Artisan::call('migrate', ['--force' => true]);
+            } catch (\Throwable $e) {
+            }
+        }
+
+        if (!Schema::hasTable('market_purchases')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Market purchases are not available right now. Please try again shortly.',
+            ], 503);
+        }
+
+        $validated = $request->validate([
+            'promo_code_id'   => 'required|integer',
+            'idempotency_key' => 'required|string|max:64',
+        ]);
+
+        $promo = PromoCode::find($validated['promo_code_id']);
+        if (!$promo) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This Market item was not found.',
+            ], 404);
+        }
+
+        if (!$promo->is_active || (!$promo->is_unlimited && $promo->expires_at && $promo->expires_at->isPast())) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Promo code "' . $promo->code . '" is no longer available.',
+            ], 422);
+        }
+
+        $price = $promo->priceAmount();
+        $key = $validated['idempotency_key'];
+
+        // Fast path: this exact submit was already processed (double-click).
+        $existing = MarketPurchase::where('user_id', $user->id)
+            ->where('idempotency_key', $key)->first();
+        if ($existing) {
+            return response()->json([
+                'success' => true,
+                'already_purchased' => true,
+                'message' => 'This purchase was already completed.',
+                'granted' => $existing->granted_summary,
+                'new_balance' => (float) ($user->live_balance ?? 0),
+                'purchase_id' => $existing->id,
+            ]);
+        }
+
+        if (Money::greaterThan($price, $user->live_balance ?? 0)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Insufficient live balance. This item costs $' . number_format($price, 2)
+                    . ' but you have $' . number_format((float) ($user->live_balance ?? 0), 2) . ' available on your live account.',
+            ], 422);
+        }
+
+        try {
+            $result = DB::transaction(function () use ($user, $promo, $price, $key) {
+                // Lock the user row so two parallel purchases cannot double-charge.
+                $lockedUser = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+
+                // Idempotency re-check under the lock (parallel double-click).
+                $byKey = MarketPurchase::where('user_id', $lockedUser->id)
+                    ->where('idempotency_key', $key)->first();
+                if ($byKey) {
+                    return ['purchase' => $byKey, 'already' => true, 'balance' => (float) $lockedUser->live_balance];
+                }
+
+                // One purchase per user per code.
+                $owned = MarketPurchase::where('user_id', $lockedUser->id)
+                    ->where('promo_code_id', $promo->id)->first();
+                if ($owned) {
+                    return ['error' => 'already_owned', 'purchase' => $owned];
+                }
+
+                // Funds re-check under the lock (balance may have changed).
+                if (Money::greaterThan($price, $lockedUser->live_balance ?? 0)) {
+                    return ['error' => 'insufficient'];
+                }
+
+                if ($price > 0) {
+                    $lockedUser->live_balance = Money::subtract($lockedUser->live_balance, $price);
+                    $lockedUser->save();
+
+                    Transaction::create([
+                        'user_id'      => $lockedUser->id,
+                        'account_type' => 'live',
+                        'type'         => 'market_purchase',
+                        'amount'       => $price,
+                        'method'       => 'market',
+                        'status'       => 'approved',
+                        'processed_at' => now(),
+                        'notes'        => 'Market purchase: ' . $promo->code . ' (' . $promo->formatted_name . ').',
+                    ]);
+                }
+
+                $granted = $this->grantMarketPurchase($lockedUser, $promo);
+
+                $purchase = MarketPurchase::create([
+                    'user_id'         => $lockedUser->id,
+                    'promo_code_id'   => $promo->id,
+                    'price_paid'      => $price,
+                    'idempotency_key' => $key,
+                    'status'          => 'completed',
+                    'granted_summary' => $granted,
+                ]);
+
+                return [
+                    'purchase' => $purchase,
+                    'already'  => false,
+                    'balance'  => (float) $lockedUser->live_balance,
+                    'granted'  => $granted,
+                ];
+            });
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Unique-index race (same key, or same user+code, slipped in
+            // between the checks): the other submit won, so return its
+            // purchase instead of charging again.
+            if ((string) $e->getCode() === '23000') {
+                $winner = MarketPurchase::where('user_id', $user->id)
+                    ->where('idempotency_key', $key)->first()
+                    ?? MarketPurchase::where('user_id', $user->id)
+                        ->where('promo_code_id', $promo->id)->first();
+                if ($winner) {
+                    return response()->json([
+                        'success' => true,
+                        'already_purchased' => true,
+                        'message' => 'This purchase was already completed.',
+                        'granted' => $winner->granted_summary,
+                        'new_balance' => (float) ($user->live_balance ?? 0),
+                        'purchase_id' => $winner->id,
+                    ]);
+                }
+            }
+            throw $e;
+        }
+
+        if (($result['error'] ?? null) === 'already_owned') {
+            return response()->json([
+                'success' => false,
+                'message' => 'You already own promo code "' . $promo->code . '". Each code can be bought once.',
+            ], 409);
+        }
+
+        if (($result['error'] ?? null) === 'insufficient') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Insufficient live balance. This item costs $' . number_format($price, 2) . '.',
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'already_purchased' => (bool) ($result['already'] ?? false),
+            'message' => ($result['already'] ?? false)
+                ? 'This purchase was already completed.'
+                : 'Promo code "' . $promo->code . '" purchased successfully!',
+            'granted' => $result['granted'] ?? null,
+            'new_balance' => $result['balance'],
+            'purchase_id' => $result['purchase']->id,
+        ]);
+    }
+
+    /**
+     * Grant what a purchased promo code promises, from the item's data.
+     *
+     * Only balance_bonus / fixed_amount can be granted here: its tooltip
+     * promises instant bonus funds, so the reward is credited to the
+     * live balance and recorded as a `bonus` transaction. A deposit
+     * bonus is credited by the existing deposit flow when the user
+     * deposits with the code. Risk-free, cashback, turnover and
+     * cancel-points effects have no engine behind them (no settlement
+     * logic exists for them), so nothing is granted — see
+     * PromoCode::grantDescription(), which is what the modal shows
+     * before the user pays. Runs inside the purchase transaction with
+     * the user row already locked.
+     */
+    private function grantMarketPurchase(User $lockedUser, PromoCode $promo): string
+    {
+        if ($promo->category === 'balance_bonus' && $promo->reward_type === 'fixed_amount') {
+            $bonus = (float) $promo->reward_value;
+            if ($bonus > 0) {
+                $lockedUser->live_balance = Money::add($lockedUser->live_balance, $bonus);
+                $lockedUser->save();
+
+                Transaction::create([
+                    'user_id'      => $lockedUser->id,
+                    'account_type' => 'live',
+                    'type'         => 'bonus',
+                    'amount'       => $bonus,
+                    'method'       => 'market',
+                    'status'       => 'approved',
+                    'processed_at' => now(),
+                    'notes'        => 'Balance bonus from Market purchase: ' . $promo->code . ' ($' . number_format($bonus, 2) . ').',
+                ]);
+            }
+        }
+
+        return $promo->grantDescription();
     }
 
     /**
@@ -731,13 +1146,15 @@ class AccountController extends Controller
                 'duration'           => '1 day',
                 'timezone_label'     => 'UTC+05:00',
                 'badge_text'         => 'Until start: 1 day(s)',
+                'status'             => 'active',
+                'is_active'          => true,
                 'description'        => 'Total prize pool is $7500. To participate you need to register and pay the entrance fee, after that $100 will be deposited to a special tournament account. Initial conditions in the tournament are the same for all participants. During one day, participants need to make trades on the tournament account. And 5 traders with the biggest tournament balance will become winners.',
                 'prize_distribution' => [
-                    ['place' => '1 Place', 'prize' => '2300$'],
-                    ['place' => '2 Place', 'prize' => '1800$'],
-                    ['place' => '3 Place', 'prize' => '1500$'],
-                    ['place' => '4 Place', 'prize' => '1200$'],
-                    ['place' => '5 Place', 'prize' => '700$'],
+                    ['place' => '1 Place', 'prize' => '3000$'],
+                    ['place' => '2 Place', 'prize' => '2000$'],
+                    ['place' => '3 Place', 'prize' => '1000$'],
+                    ['place' => '4 Place', 'prize' => '900$'],
+                    ['place' => '5 Place', 'prize' => '600$'],
                 ]
             ]);
         }
@@ -751,13 +1168,30 @@ class AccountController extends Controller
 
         $trades = Trade::where('user_id', $user->id)->get();
         $tradesCount = $trades->count();
-        $profitableCount = $trades->where('result', 'win')->count();
-        $tradesProfit = $trades->where('result', 'win')->sum('profit') - $trades->where('result', 'loss')->sum('amount');
-        $netTurnover = $trades->sum('amount');
-        $avgProfit = $profitableCount > 0 ? round($trades->where('result', 'win')->avg('profit'), 2) : 0;
-        $minTrade = $tradesCount > 0 ? $trades->min('amount') : 0;
-        $maxTrade = $tradesCount > 0 ? $trades->max('amount') : 0;
-        $maxProfit = $profitableCount > 0 ? $trades->where('result', 'win')->max('profit') : 0;
+
+        // Profit stats MUST come from TradeResultService::settledProfit().
+        // The old code summed 'profit' and 'amount' — attributes that do
+        // not exist on the Trade model (its columns are investment /
+        // payout) — so every profit figure here was 0. settledProfit()
+        // is the single correct source: win = payout - investment,
+        // loss = credited amount (0, or the early-sell buyout) -
+        // investment, draw = 0. Pending trades are excluded: a pending
+        // trade has no result yet, and settledProfit() on one would
+        // read as -investment.
+        $settled = $trades->where('result', '!=', 'pending');
+        $profitById = $settled->mapWithKeys(
+            fn (Trade $trade) => [$trade->id => TradeResultService::settledProfit($trade)]
+        );
+        $profitOf = fn (Trade $trade) => (float) ($profitById[$trade->id] ?? 0);
+
+        $winningTrades = $settled->where('result', 'win');
+        $profitableCount = $winningTrades->count();
+        $tradesProfit = round($profitById->sum(), 2);
+        $netTurnover = round($settled->sum('investment'), 2);
+        $avgProfit = $profitableCount > 0 ? round($winningTrades->sum($profitOf) / $profitableCount, 2) : 0;
+        $minTrade = $tradesCount > 0 ? (float) $trades->min('investment') : 0;
+        $maxTrade = $tradesCount > 0 ? (float) $trades->max('investment') : 0;
+        $maxProfit = $profitableCount > 0 ? round($winningTrades->max($profitOf), 2) : 0;
 
         $stats = [
             'trades_count'      => $tradesCount,

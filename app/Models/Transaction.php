@@ -30,6 +30,10 @@ class Transaction extends Model
         'gateway_amount',
         'gateway_currency',
         'gateway_conversion_rate',
+        // Withdrawal fee (3% from the 3rd same-day withdrawal) and the
+        // amount actually sent after the fee. For deposits both are 0.
+        'fee_amount',
+        'net_amount',
     ];
 
     protected function casts(): array
@@ -37,6 +41,8 @@ class Transaction extends Model
         return [
             'provider_payload' => 'array',
             'processed_at' => 'datetime',
+            'fee_amount' => 'decimal:2',
+            'net_amount' => 'decimal:2',
         ];
     }
 

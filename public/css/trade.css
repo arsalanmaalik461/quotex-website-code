@@ -341,6 +341,71 @@ body.short-order-labels .mob-deal-row {
   color: #fff;
 }
 
+/* Pair Information modal (floating PAIR INFORMATION button). Reuses the
+   trade-confirm backdrop/box; rows below are filled with real stats. */
+.pair-info-box {
+  width: 360px;
+}
+
+.pair-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  color: #8593a8;
+}
+
+.pair-info-row b {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.pair-info-row b.positive {
+  color: #00c853;
+}
+
+.pair-info-row b.negative {
+  color: #ff3b53;
+}
+
+.pair-info-sentiment-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 10px 0 6px;
+  background: #ff3b53;
+}
+
+.pair-info-sentiment-buy {
+  display: block;
+  height: 100%;
+  background: #00c853;
+  width: 50%;
+}
+
+.pair-info-sentiment-sell {
+  display: block;
+  height: 100%;
+  background: #ff3b53;
+  width: 50%;
+}
+
+.pair-info-sentiment-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.pair-info-error {
+  color: #ff8a8a;
+}
+
 .trade-confirm-btn.ok {
   background: #00c853;
   color: #000;
@@ -800,22 +865,6 @@ body.trade-body {
   margin-left: 2px;
 }
 
-.pair-info-link {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #026FD3;
-  font-size: 9px;
-  font-weight: 700;
-  cursor: pointer;
-  letter-spacing: 0.4px;
-  padding-left: 2px;
-}
-
-.pair-info-link:hover {
-  text-decoration: underline;
-}
-
 .trade-sub-badge {
   font-size: 8px;
   font-weight: 700;
@@ -1116,6 +1165,24 @@ body.trade-body {
 .notif-icon-bonus {
   background: rgba(255, 152, 0, 0.12);
   border: 1px solid rgba(255, 152, 0, 0.25);
+}
+
+/* Tournament-entry notifications (own type — never a withdrawal). */
+.notif-icon-tournament {
+  background: rgba(255, 214, 0, 0.12);
+  border: 1px solid rgba(255, 214, 0, 0.3);
+}
+
+.notif-item.unread.notif-type-tournament_entry {
+  border-left-color: #ffd600;
+}
+
+.tournament-emoji {
+  font-size: 17px;
+}
+
+.text-tournament {
+  color: #ffd600 !important;
 }
 
 .notif-icon-pending {
@@ -2053,6 +2120,26 @@ body.trade-body {
   color: #fff;
 }
 
+/* Real timezone <select> in Settings (replaces the old display-only
+   hidden input + static value). Same dark styling as the value box. */
+select.input-control__select {
+  width: 100%;
+  background: #0d101a;
+  border: 1px solid #222a3d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  outline: none;
+}
+
+select.input-control__select option {
+  background: #0d101a;
+  color: #fff;
+}
+
 .theme-radio-opt {
   display: flex;
   align-items: center;
@@ -2425,21 +2512,9 @@ body.trade-body {
   padding: 0 2px;
 }
 
-/* EXACT QUOTEX BOTTOM-LEFT WIN/DEAL OUTCOME CARD (Screenshot Exact) */
-.bottom-result-card {
-  position: absolute;
-  bottom: 44px;
-  left: 160px;
-  z-index: 38;
-  min-width: 180px;
-  background: #151b27;
-  border: 1px solid #232c3f;
-  border-radius: 8px;
-  padding: 10px 14px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
-  animation: badgePopIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  transition: opacity 0.35s ease, transform 0.35s ease;
-}
+/* (Team H: the duplicate .bottom-result-card rule that lived here was
+   removed — the single definition below wins on every conflicting
+   property today, so removing this copy changes nothing visually.) */
 
 .result-card-header {
   display: flex;
@@ -2465,6 +2540,10 @@ body.trade-body {
 .card-sym {
   color: #ffffff;
   font-weight: 700;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-dot {
@@ -3447,6 +3526,34 @@ body.trade-body {
   border-left: 4px solid #e85b4e;
 }
 
+.bottom-result-card.tie {
+  border-left: 4px solid #ffd600;
+}
+
+/* WIN / LOSS / DRAW label on the result card (Team H). */
+.result-card-outcome {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.result-card-outcome.win {
+  color: #0a3d24;
+  background: #10a055;
+}
+
+.result-card-outcome.loss {
+  color: #fff;
+  background: #e85b4e;
+}
+
+.result-card-outcome.tie {
+  color: #3d3400;
+  background: #ffd600;
+}
+
 .bottom-result-card.fade-out {
   opacity: 0;
 }
@@ -3896,6 +4003,95 @@ body.trade-body {
 .trades-nav-title .trades-count-pill {
   background: #026FD3;
   color: #fff;
+}
+
+/* Active / History tabs in the trades panel header. */
+.trades-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trades-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #8fa0b5;
+  cursor: pointer;
+}
+
+.trades-tab:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trades-tab.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.trades-tab.active .trades-count-pill {
+  background: #026FD3;
+  color: #fff;
+}
+
+/* Collapsed-row meta: payout %, open time, duration/expiry — visible
+   without expanding the card. */
+.deal-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8fa0b5;
+}
+
+.deal-meta-item {
+  white-space: nowrap;
+}
+
+/* Desktop Double-up + Sell row (Double-up mirrors mobile x2). */
+.deal-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.deal-actions-row .btn-deal-sell {
+  flex: 1;
+  margin-top: 0;
+}
+
+.btn-deal-double {
+  height: 28px;
+  padding: 0 12px;
+  background: #252d3f;
+  border: 1px solid #364259;
+  border-radius: 4px;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn-deal-double:hover {
+  background: #2d374c;
+  color: #fff;
+}
+
+.btn-deal-double:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .trades-nav-icons {
@@ -4543,12 +4739,24 @@ body.trade-body {
 }
 
 .qx-row-fav {
+  background: transparent;
+  border: none;
+  padding: 0;
   color: #55627a;
   font-size: 13px;
   cursor: pointer;
 }
 
 .qx-row-fav:hover {
+  color: #ffb300;
+}
+
+.qx-row-fav.faved {
+  color: #ffb300;
+}
+
+.qx-fav-badge-btn.active {
+  border-color: #ffb300;
   color: #ffb300;
 }
 
@@ -4954,10 +5162,6 @@ body.trade-body {
     display: none;
   }
 
-  .pair-info-link span {
-    display: none;
-  }
-
   .trade-panel {
     width: 240px;
   }
@@ -5004,15 +5208,31 @@ body.trade-body {
     justify-content: space-between !important;
   }
 
-  .header-left,
+  /* Team H: keep the hamburger reachable on mobile — it opens the More
+     menu, whose foot carries the sidebar-bottom utilities (Settings /
+     Fullscreen / Sound / Help). Only the banner stays hidden here. */
   .header-center,
-  .btn-hamburger,
   .btn-withdrawal-header {
     display: none !important;
   }
 
+  .header-left {
+    display: flex !important;
+    flex-shrink: 0 !important;
+  }
+
+  .header-brand {
+    display: none !important;
+  }
+
+  .btn-hamburger {
+    display: flex !important;
+  }
+
   .header-right {
-    width: 100% !important;
+    width: auto !important;
+    flex: 1 !important;
+    min-width: 0 !important;
     display: flex !important;
     align-items: center !important;
     justify-content: space-between !important;
@@ -5575,8 +5795,34 @@ body.trade-body {
     display: none;
   }
 
+  /* Team H (mobile): the sidebar bottom (Settings / Fullscreen /
+     Sound / Help) is NOT display:none any more. The 50px bottom bar
+     keeps its 5 icons; this strip is pinned just above it and slides
+     in only while the More menu is open (body.qx-mobile-menu-open,
+     set by toggleSidebarMenu()). It scrolls horizontally on very
+     narrow screens. */
   .sidebar-bottom {
-    display: none !important;
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 50px !important;
+    flex-direction: row !important;
+    justify-content: center !important;
+    align-items: center !important;
+    gap: 18px !important;
+    background: #141722 !important;
+    border-top: 1px solid #222a3d !important;
+    padding: 8px 12px !important;
+    z-index: 500 !important;
+    overflow-x: auto !important;
+    transform: translateY(160%) !important;
+    visibility: hidden !important;
+    transition: transform 0.22s ease, visibility 0.22s ease !important;
+  }
+
+  body.qx-mobile-menu-open .sidebar-bottom {
+    transform: translateY(0) !important;
+    visibility: visible !important;
   }
 
   /* Responsive Signals and More Drawers */
@@ -5602,6 +5848,9 @@ body.trade-body {
     border-radius: 16px 16px 0 0 !important;
     z-index: 400 !important;
     overflow-y: auto !important;
+    /* Team H: room for the pinned sidebar-bottom utility strip, so the
+       last drawer items stay reachable by scrolling. */
+    padding-bottom: 64px !important;
     box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.8) !important;
   }
 
@@ -5793,9 +6042,8 @@ body.trade-body {
 }
 
 @media (max-width: 480px) {
-  .btn-hamburger {
-    display: none !important;
-  }
+  /* Team H: the hamburger stays visible at ≤480px too — it opens the
+     More menu with the sidebar-bottom utilities. */
 
   .brand-text {
     display: none !important;
@@ -6892,6 +7140,24 @@ body.trade-body {
   background: #34394d !important;
   color: #ffffff !important;
   font-weight: 700 !important;
+}
+
+/* Chart Type Popover (same panel as the timeframe popover, vertical list) */
+.chart-type-popover {
+  bottom: 48px;
+  left: 48px;
+  min-width: 170px;
+}
+
+.ct-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ct-grid-btn {
+  text-align: left;
+  padding: 9px 10px;
 }
 
 /* Candle countdown badge on the current price line */

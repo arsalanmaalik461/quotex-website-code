@@ -540,6 +540,132 @@
     font-weight: 700;
     cursor: pointer;
   }
+
+  /* Market purchase: Buy button on each promo row */
+  .market-buy-btn {
+    background: #00c853;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .market-buy-btn:hover {
+    background: #00e676;
+  }
+  .market-buy-btn:active {
+    transform: scale(0.98);
+  }
+  .market-buy-btn:disabled {
+    cursor: default;
+    transform: none;
+  }
+  .market-buy-btn.owned {
+    background: #232d3f;
+    color: #5f6f89;
+  }
+  .market-owned-tag {
+    display: inline-block;
+    background: rgba(0, 200, 83, 0.15);
+    color: #00e676;
+    border: 1px solid rgba(0, 200, 83, 0.3);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .market-more-hint {
+    color: #5f6f89;
+    font-size: 12px;
+    padding: 10px 6px 0 6px;
+  }
+  .market-promocode__using {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  /* "Show all" category catalogue modal */
+  .promo-modal-dialog.wide {
+    max-width: 560px;
+  }
+  #marketCategoryList {
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .market-catalog-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    justify-content: space-between;
+    background: #131722;
+    border: 1px solid #1f2738;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .market-catalog-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffffff;
+  }
+  .market-catalog-status {
+    font-size: 12px;
+    color: #8a98b0;
+    margin-top: 2px;
+  }
+  .market-catalog-grant {
+    font-size: 12px;
+    color: #8a98b0;
+    line-height: 1.45;
+    margin-top: 6px;
+  }
+  .market-catalog-action {
+    flex-shrink: 0;
+  }
+
+  /* Purchase confirm modal */
+  .market-purchase-summary {
+    background: #131722;
+    border: 1px solid #1f2738;
+    border-radius: 8px;
+    padding: 6px 14px;
+    margin-bottom: 14px;
+  }
+  .market-purchase-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid #1c2436;
+    font-size: 13px;
+    color: #8a98b0;
+  }
+  .market-purchase-row:last-child {
+    border-bottom: none;
+  }
+  .market-purchase-row strong {
+    color: #ffffff;
+    font-weight: 700;
+  }
+  .market-purchase-grant {
+    background: rgba(2, 111, 211, 0.12);
+    border: 1px solid rgba(2, 111, 211, 0.35);
+    color: #b0c0d8;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
 </style>
 @endpush
 
@@ -672,10 +798,15 @@
 
             @if($hasCodes)
               <div class="market-promocodes-list">
-                @foreach($items as $promo)
+                @foreach($items->take(3) as $promo)
+                  @php
+                    $owned = in_array($promo->id, $ownedPromoIds ?? []);
+                    $price = $promo->priceAmount();
+                  @endphp
                   <div class="market-promocode active">
                     <div class="market-promocode__name">
                       {{ $promo->formatted_name }}
+                      @if($owned)<span class="market-owned-tag">Owned</span>@endif
                     </div>
                     <div class="market-promocode__status">
                       <span class="status-check-circle">
@@ -684,14 +815,20 @@
                       <span>{{ $promo->formatted_status }}</span>
                     </div>
                     <div class="market-promocode__using active">
-                      <a href="{{ route('deposit', ['promo' => $promo->code]) }}" class="market-link-use">
-                        <span>Use it</span>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                      </a>
+                      <button type="button" class="market-buy-btn {{ $owned ? 'owned' : '' }}" {{ $owned ? 'disabled' : '' }} onclick="openPurchaseModal({{ $promo->id }})">{{ $owned ? 'Owned' : ($price > 0 ? 'Buy $' . number_format($price, 2) : 'Get free') }}</button>
+                      @if($promo->category === 'deposit_bonus')
+                        <a href="{{ route('deposit', ['promo' => $promo->code]) }}" class="market-link-use">
+                          <span>Use it</span>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                        </a>
+                      @endif
                     </div>
                   </div>
                 @endforeach
               </div>
+              @if($count > 3)
+                <div class="market-more-hint">+{{ $count - 3 }} more in this category — tap "Show all" below to see them.</div>
+              @endif
             @else
               <div class="market-promocodes__not">
                 <div class="market-empty-box">
@@ -710,7 +847,7 @@
 
           {{-- Footer --}}
           <div class="{{ $config['class'] }}__footer space_between {{ $hasCodes ? '' : 'opacity' }}">
-            <div class="{{ $config['class'] }}__footer-history pointer" onclick="openPromoModal()">
+            <div class="{{ $config['class'] }}__footer-history pointer" onclick="openCategoryModal('{{ $catKey }}', '{{ $config['title'] }}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
               <span>Show all</span>
             </div>
@@ -836,5 +973,247 @@
       msg.style.display = 'block';
     });
   }
+</script>
+
+{{-- "Show all" category catalogue modal: every promo code in one category --}}
+<div class="promo-modal-backdrop" id="marketCategoryModal">
+  <div class="promo-modal-dialog wide">
+    <div class="promo-modal-header">
+      <div class="promo-modal-title" id="marketCategoryTitle">Market</div>
+      <button type="button" class="promo-modal-close" onclick="closeCategoryModal()">&times;</button>
+    </div>
+    <div id="marketCategoryList"></div>
+  </div>
+</div>
+
+{{-- Purchase confirm modal: centered in-app confirm, never a native dialog --}}
+<div class="promo-modal-backdrop" id="marketPurchaseModal">
+  <div class="promo-modal-dialog">
+    <div class="promo-modal-header">
+      <div class="promo-modal-title" id="marketPurchaseTitle">Buy promo code</div>
+      <button type="button" class="promo-modal-close" onclick="closePurchaseModal()">&times;</button>
+    </div>
+    <div class="promo-modal-body">
+      <div id="marketPurchaseMsg" class="promo-modal-msg"></div>
+
+      <div class="market-purchase-summary">
+        <div class="market-purchase-row"><span>Item</span><strong id="mpItem"></strong></div>
+        <div class="market-purchase-row"><span>Price</span><strong id="mpPrice"></strong></div>
+        <div class="market-purchase-row"><span>Pay from</span><strong>Live balance</strong></div>
+        <div class="market-purchase-row"><span>Live balance</span><strong id="mpBalance"></strong></div>
+        <div class="market-purchase-row"><span>Balance after purchase</span><strong id="mpAfter"></strong></div>
+      </div>
+
+      <div class="market-purchase-grant" id="mpGrant"></div>
+
+      <div class="promo-modal-actions">
+        <button type="button" class="promo-modal-btn-cancel" onclick="closePurchaseModal()">Cancel</button>
+        <button type="button" class="promo-modal-btn-apply" id="btnConfirmPurchase" onclick="confirmPurchase()">Confirm purchase</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+@php
+  // Catalogue for the "Show all" modal and the purchase modal, rendered
+  // once server-side so the modals never need an extra request.
+  $marketCatalog = [];
+  foreach ($activePromos as $cat => $promos) {
+    $marketCatalog[$cat] = $promos->map(function ($p) use ($ownedPromoIds) {
+      return [
+        'id'       => $p->id,
+        'code'     => $p->code,
+        'name'     => $p->formatted_name,
+        'status'   => $p->formatted_status,
+        'price'    => $p->priceAmount(),
+        'grant'    => $p->grantDescription(),
+        'owned'    => in_array($p->id, $ownedPromoIds ?? []),
+        'category' => $p->category,
+      ];
+    })->values()->all();
+  }
+@endphp
+
+<script>
+  // Full Market catalogue (all active promo codes, grouped by category).
+  const MARKET_CATALOG = @json($marketCatalog);
+  // Live balance at page load; refreshed from the purchase response.
+  let MARKET_LIVE_BALANCE = {{ (float) ($user->live_balance ?? 0) }};
+  // The purchase currently being confirmed (id + one idempotency key per
+  // confirm-modal open, so a rapid double-click replays the same key and
+  // the server returns the first purchase instead of charging twice).
+  let MARKET_CURRENT_PURCHASE = null;
+
+  function marketMoney(n) {
+    return '$' + Number(n).toFixed(2);
+  }
+
+  function marketUuid() {
+    if (window.crypto && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return 'mp-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  }
+
+  function marketEscapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function marketFindItem(id) {
+    for (const cat of Object.keys(MARKET_CATALOG)) {
+      const found = MARKET_CATALOG[cat].find(item => item.id === id);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  function marketBuyButtonHtml(item) {
+    if (item.owned) {
+      return '<button type="button" class="market-buy-btn owned" disabled>Owned</button>';
+    }
+    const label = item.price > 0 ? 'Buy ' + marketMoney(item.price) : 'Get free';
+    return '<button type="button" class="market-buy-btn" onclick="openPurchaseModal(' + item.id + ')">' + label + '</button>';
+  }
+
+  // "Show all": list EVERY promo code in this category, with its price,
+  // status, what it grants, and a Buy button.
+  function openCategoryModal(catKey, title) {
+    const items = MARKET_CATALOG[catKey] || [];
+    document.getElementById('marketCategoryTitle').innerText = title + ' — all promo codes';
+    const list = document.getElementById('marketCategoryList');
+
+    if (!items.length) {
+      list.innerHTML = '<p style="color:#8a98b0; font-size:13px;">No promo codes in this category yet.</p>';
+    } else {
+      list.innerHTML = items.map(item => {
+        return '<div class="market-catalog-item">'
+          + '<div class="market-catalog-info">'
+          + '<div class="market-catalog-name">' + marketEscapeHtml(item.name)
+          + (item.owned ? ' <span class="market-owned-tag">Owned</span>' : '') + '</div>'
+          + '<div class="market-catalog-status">' + marketEscapeHtml(item.status) + '</div>'
+          + '<div class="market-catalog-grant">' + marketEscapeHtml(item.grant) + '</div>'
+          + '</div>'
+          + '<div class="market-catalog-action">' + marketBuyButtonHtml(item) + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    document.getElementById('marketCategoryModal').classList.add('open');
+  }
+
+  function closeCategoryModal() {
+    document.getElementById('marketCategoryModal').classList.remove('open');
+  }
+
+  // Open the centered in-app purchase confirm modal for one item.
+  function openPurchaseModal(promoId) {
+    const item = marketFindItem(promoId);
+    if (!item) {
+      return;
+    }
+
+    MARKET_CURRENT_PURCHASE = { id: item.id, key: marketUuid() };
+    closeCategoryModal();
+
+    document.getElementById('marketPurchaseTitle').innerText = 'Buy ' + item.code;
+    document.getElementById('mpItem').innerText = item.name;
+    document.getElementById('mpPrice').innerText = marketMoney(item.price);
+    document.getElementById('mpBalance').innerText = marketMoney(MARKET_LIVE_BALANCE);
+
+    const after = MARKET_LIVE_BALANCE - item.price;
+    const afterEl = document.getElementById('mpAfter');
+    afterEl.innerText = marketMoney(after);
+    afterEl.style.color = after < 0 ? '#ff4c6a' : '#ffffff';
+
+    document.getElementById('mpGrant').innerText = item.grant;
+
+    const msg = document.getElementById('marketPurchaseMsg');
+    msg.className = 'promo-modal-msg';
+    msg.style.display = 'none';
+    msg.innerText = '';
+
+    const btn = document.getElementById('btnConfirmPurchase');
+    btn.disabled = false;
+    btn.innerText = 'Confirm purchase';
+
+    document.getElementById('marketPurchaseModal').classList.add('open');
+  }
+
+  function closePurchaseModal() {
+    document.getElementById('marketPurchaseModal').classList.remove('open');
+  }
+
+  function confirmPurchase() {
+    if (!MARKET_CURRENT_PURCHASE) {
+      return;
+    }
+
+    const btn = document.getElementById('btnConfirmPurchase');
+    const msg = document.getElementById('marketPurchaseMsg');
+
+    btn.disabled = true;
+    btn.innerText = 'Processing...';
+
+    fetch('{{ route("market.purchase") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        promo_code_id: MARKET_CURRENT_PURCHASE.id,
+        idempotency_key: MARKET_CURRENT_PURCHASE.key
+      })
+    })
+    .then(res => res.json().then(data => ({ status: res.status, body: data })))
+    .then(({ status, body }) => {
+      btn.disabled = false;
+      btn.innerText = 'Confirm purchase';
+
+      if (status === 200 && body.success) {
+        msg.className = 'promo-modal-msg success';
+        msg.innerText = body.message
+          + (body.granted ? ' ' + body.granted : '')
+          + ' New live balance: ' + marketMoney(body.new_balance) + '.';
+        msg.style.display = 'block';
+        MARKET_LIVE_BALANCE = body.new_balance;
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        msg.className = 'promo-modal-msg error';
+        msg.innerText = body.message || 'Purchase failed. Please try again.';
+        msg.style.display = 'block';
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerText = 'Confirm purchase';
+      msg.className = 'promo-modal-msg error';
+      msg.innerText = 'Error connecting to server. Please try again.';
+      msg.style.display = 'block';
+    });
+  }
+
+  document.getElementById('marketCategoryModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+      closeCategoryModal();
+    }
+  });
+
+  document.getElementById('marketPurchaseModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+      closePurchaseModal();
+    }
+  });
 </script>
 @endsection

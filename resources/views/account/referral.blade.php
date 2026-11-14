@@ -479,7 +479,7 @@
                 @endif
               </td>
               <td>
-                <span style="color:#ffffff; font-weight:600;">Trader #{{ 93090570 + $comm->referred_user_id }}</span>
+                <span style="color:#ffffff; font-weight:600;">Trader #{{ $comm->referred_user_id }}</span>
               </td>
               <td><strong style="color:#00e676; font-size:14px;">+${{ number_format($comm->commission_amount, 2) }}</strong></td>
               <td><span class="ref-badge green">✓ Credited</span></td>
@@ -524,7 +524,7 @@
           @forelse($referrals as $refUser)
             <tr>
               <td>
-                <div style="font-weight:700; color:#ffffff;">Trader #{{ 93090570 + $refUser->id }}</div>
+                <div style="font-weight:700; color:#ffffff;">Trader #{{ $refUser->id }}</div>
               </td>
               <td>{{ $refUser->country ?? '—' }}</td>
               <td><strong>{{ $refUser->trades_count }}</strong> trades</td>

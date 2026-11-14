@@ -116,27 +116,27 @@
                 <div id="prizeDistributionContainer" style="display:flex; flex-direction:column; gap:8px;">
                     <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                         <input type="text" name="prize_places[]" class="form-control" placeholder="1 Place" value="1 Place">
-                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="2300$" value="2300$">
+                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="3000$" value="3000$">
                         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                     </div>
                     <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                         <input type="text" name="prize_places[]" class="form-control" placeholder="2 Place" value="2 Place">
-                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="1800$" value="1800$">
+                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="2000$" value="2000$">
                         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                     </div>
                     <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                         <input type="text" name="prize_places[]" class="form-control" placeholder="3 Place" value="3 Place">
-                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="1500$" value="1500$">
+                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="1000$" value="1000$">
                         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                     </div>
                     <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                         <input type="text" name="prize_places[]" class="form-control" placeholder="4 Place" value="4 Place">
-                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="1200$" value="1200$">
+                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="900$" value="900$">
                         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                     </div>
                     <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                         <input type="text" name="prize_places[]" class="form-control" placeholder="5 Place" value="5 Place">
-                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="700$" value="700$">
+                        <input type="text" name="prize_amounts[]" class="form-control" placeholder="600$" value="600$">
                         <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                     </div>
                 </div>

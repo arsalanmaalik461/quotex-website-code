@@ -110,7 +110,8 @@
     candles: [],
     chart: null,
     series: null,
-    chartType: 'candles', // 'candles' or 'area'
+    chartType: 'candles', // 'candles' | 'area' | 'line' | 'bar' | 'heikenashi'
+    haCandles: [], // Heiken Ashi transform of state.candles (same times)
     timeframeSec: 60,
     priceTimer: null,
     marketSyncTimer: null,
@@ -119,7 +120,7 @@
     accountType: 'demo',
     balance: 10000,
     oneClick: true,
-    indicators: { sma: false, ema: false, bollinger: false, rsi: false },
+    indicators: { sma: false, ema: false, bollinger: false, rsi: false, macd: false, stochastic: false, cci: false, adx: false, atr: false, williams: false, momentum: false, roc: false },
     smaSeries: null,
     emaSeries: null,
     bbUpperSeries: null,
@@ -127,6 +128,27 @@
     rsiSeries: null,
     rsiUpperSeries: null,
     rsiLowerSeries: null,
+    macdSeries: null,
+    macdSignalSeries: null,
+    macdHistSeries: null,
+    stochKSeries: null,
+    stochDSeries: null,
+    stochUpperSeries: null,
+    stochLowerSeries: null,
+    cciSeries: null,
+    cciUpperSeries: null,
+    cciLowerSeries: null,
+    adxSeries: null,
+    adxPlusDiSeries: null,
+    adxMinusDiSeries: null,
+    atrSeries: null,
+    williamsSeries: null,
+    williamsUpperSeries: null,
+    williamsLowerSeries: null,
+    momentumSeries: null,
+    momentumZeroSeries: null,
+    rocSeries: null,
+    rocZeroSeries: null,
     // --- User settings (theme, platform toggles, colours) — persisted in localStorage ---
     settings: {
       theme: 'night',
@@ -136,6 +158,11 @@
       performanceMode: true,
       shortOrderLabel: false,
       hideResults: false,
+      hideBalance: false,
+      // Selected IANA timezone for the clock and all displayed trade
+      // times (Settings → Timezone). Default Asia/Karachi preserves the
+      // old UTC+5 behaviour; see TIMEZONE_OPTIONS below.
+      timezone: 'Asia/Karachi',
       upColor: '#00c853',
       downColor: '#ff3b53',
       chartBg: null,
@@ -309,7 +336,7 @@
     if (digEl) digEl.value = asset.digits;
     const flagHtml = renderAssetFlagsHtml(asset.symbol, asset.flag, asset.type);
     if (el.assetSymbol) el.assetSymbol.textContent = asset.symbol;
-    if (el.assetPayout) el.assetPayout.textContent = '+' + asset.payout + '%';
+    if (el.assetPayout) el.assetPayout.textContent = asset.payout + '%';
     if (el.assetFlag) el.assetFlag.innerHTML = flagHtml;
     if (el.panelSymbol) el.panelSymbol.textContent = asset.symbol;
     if (el.panelPayout) el.panelPayout.textContent = asset.payout + '%';
@@ -398,6 +425,7 @@
     applySavedSettings();
     initChart();
     loadDrawings();
+    loadIndicators();
     renderDrawings();
     loadPriceData();
     bindEvents();
@@ -406,7 +434,6 @@
     updatePayoutCalculation();
     startActiveTradesMonitor();
     startLiveClock();
-    startLiveTickerStream();
     startSentimentEngine();
 
     // Restore active running trades on page reload
@@ -558,7 +585,7 @@
 
     const flagHtml = renderAssetFlagsHtml(chosenAsset.symbol, chosenAsset.flag, chosenAsset.type);
     if (el.assetSymbol) el.assetSymbol.textContent = chosenAsset.symbol;
-    if (el.assetPayout) el.assetPayout.textContent = '+' + chosenAsset.payout + '%';
+    if (el.assetPayout) el.assetPayout.textContent = chosenAsset.payout + '%';
     if (el.assetFlag) el.assetFlag.innerHTML = flagHtml;
     if (el.panelSymbol) el.panelSymbol.textContent = chosenAsset.symbol;
     if (el.panelPayout) el.panelPayout.textContent = chosenAsset.payout + '%';
@@ -595,6 +622,7 @@
     state.currentPrice = chosenAsset.base;
     loadPriceData();
     loadDrawings();
+    loadIndicators();
     renderDrawings();
     connectLiveCryptoStream(chosenAsset.symbol);
     updatePayoutCalculation();
@@ -670,6 +698,111 @@
     window.addEventListener('resize', () => { updateChartTradesOverlay(); renderDrawings(); });
   }
 
+  // --- Chart types (Candles / Area / Line / Bars / Heiken Ashi) ---
+  // Real Quotex offers all five. All render from the same state.candles:
+  // Area + Line plot the closes, Bars use the library's native bar
+  // series on the raw OHLC data, and Heiken Ashi renders on a normal
+  // candlestick series fed with transformed OHLC data (no new charting
+  // dependency). Indicators and drawings keep using state.candles, so
+  // they work unchanged on every type.
+  const CHART_TYPES = ['candles', 'area', 'line', 'bar', 'heikenashi'];
+  const CHART_TYPE_LABELS = {
+    candles: 'Candles',
+    area: 'Area',
+    line: 'Line',
+    bar: 'Bars',
+    heikenashi: 'Heiken Ashi',
+  };
+  const CHART_TYPE_STORAGE_KEY = 'qx-chart-type';
+
+  // Heiken Ashi transform of a candle array.
+  //   HA close = (O + H + L + C) / 4
+  //   HA open  = (prev HA open + prev HA close) / 2
+  //   HA high  = max(H, HA open, HA close)
+  //   HA low   = min(L, HA open, HA close)
+  // The first candle has no previous HA candle, so its HA open is seeded
+  // with the midpoint of the first real candle (standard convention).
+  // Values are rounded to the asset's precision, like the source candles.
+  function computeHeikenAshi(candles) {
+    const ha = [];
+    let prevHaOpen = null;
+    let prevHaClose = null;
+    for (let i = 0; i < candles.length; i++) {
+      const c = candles[i];
+      const prec = getPrecision(c.close);
+      const round = (v) => +v.toFixed(prec);
+      const haClose = round((c.open + c.high + c.low + c.close) / 4);
+      const haOpen = (prevHaOpen === null)
+        ? round((c.open + c.close) / 2)
+        : round((prevHaOpen + prevHaClose) / 2);
+      const haHigh = round(Math.max(c.high, haOpen, haClose));
+      const haLow = round(Math.min(c.low, haOpen, haClose));
+      ha.push({ time: c.time, open: haOpen, high: haHigh, low: haLow, close: haClose });
+      prevHaOpen = haOpen;
+      prevHaClose = haClose;
+    }
+    return ha;
+  }
+
+  // The data the main series wants for the current chart type.
+  function seriesDataForType() {
+    if (state.chartType === 'area' || state.chartType === 'line') {
+      return state.candles.map(c => ({ time: c.time, value: c.close }));
+    }
+    if (state.chartType === 'heikenashi') {
+      state.haCandles = computeHeikenAshi(state.candles);
+      return state.haCandles;
+    }
+    return state.candles; // 'candles' and 'bar' take raw OHLC data
+  }
+
+  // Incremental update for one live tick: returns the single data item
+  // the main series needs for the candle being formed/started.
+  // `candle` is the raw candle from state.candles AFTER it was mutated.
+  function seriesTickUpdate(candle, newClose) {
+    if (state.chartType === 'area' || state.chartType === 'line') {
+      return { time: candle.time, value: newClose };
+    }
+    if (state.chartType === 'heikenashi') {
+      // Recompute the transform (a few hundred candles at most, cheap)
+      // and feed the last HA candle; the earlier HA candles are
+      // unchanged because their inputs never change.
+      state.haCandles = computeHeikenAshi(state.candles);
+      return state.haCandles[state.haCandles.length - 1];
+    }
+    return candle; // 'candles' and 'bar'
+  }
+
+  // Area / line colour follows the session trend (last close vs first
+  // open), using the user's Up/Down trend colours like the candles do —
+  // the area used to be stuck on the Up colour (green) even in a
+  // downtrend.
+  function areaTrendColor() {
+    const cs = state.candles;
+    if (!cs || cs.length < 2) return state.settings.upColor;
+    return (cs[cs.length - 1].close >= cs[0].open) ? state.settings.upColor : state.settings.downColor;
+  }
+
+  // Re-apply the area/line colour only when the trend direction flips
+  // (cheap: a single applyOptions, no series rebuild).
+  function refreshAreaTrendColor() {
+    if (!state.series || (state.chartType !== 'area' && state.chartType !== 'line')) return;
+    const c = areaTrendColor();
+    if (state._areaTrendColor === c) return;
+    state._areaTrendColor = c;
+    try {
+      if (state.chartType === 'area') {
+        state.series.applyOptions({
+          lineColor: c,
+          topColor: hexToRgba(c, 0.35),
+          bottomColor: hexToRgba(c, 0.0),
+        });
+      } else {
+        state.series.applyOptions({ color: c });
+      }
+    } catch (e) {}
+  }
+
   function createSeries() {
     if (!state.chart) return;
     if (state.series) {
@@ -680,11 +813,19 @@
     // updateIndicators() recreates them on the fresh series instead of
     // leaving stale lines (or losing them) after an asset / chart-type
     // / timeframe switch.
-    [state.smaSeries, state.emaSeries, state.bbUpperSeries, state.bbLowerSeries, state.rsiSeries, state.rsiUpperSeries, state.rsiLowerSeries].forEach(s => {
+    [state.smaSeries, state.emaSeries, state.bbUpperSeries, state.bbLowerSeries, state.rsiSeries, state.rsiUpperSeries, state.rsiLowerSeries, state.macdSeries, state.macdSignalSeries, state.macdHistSeries, state.stochKSeries, state.stochDSeries, state.stochUpperSeries, state.stochLowerSeries, state.cciSeries, state.cciUpperSeries, state.cciLowerSeries, state.adxSeries, state.adxPlusDiSeries, state.adxMinusDiSeries, state.atrSeries, state.williamsSeries, state.williamsUpperSeries, state.williamsLowerSeries, state.momentumSeries, state.momentumZeroSeries, state.rocSeries, state.rocZeroSeries].forEach(s => {
       if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
     });
     state.smaSeries = state.emaSeries = state.bbUpperSeries = state.bbLowerSeries = null;
     state.rsiSeries = state.rsiUpperSeries = state.rsiLowerSeries = null;
+    state.macdSeries = state.macdSignalSeries = state.macdHistSeries = null;
+    state.stochKSeries = state.stochDSeries = state.stochUpperSeries = state.stochLowerSeries = null;
+    state.cciSeries = state.cciUpperSeries = state.cciLowerSeries = null;
+    state.adxSeries = state.adxPlusDiSeries = state.adxMinusDiSeries = null;
+    state.atrSeries = null;
+    state.williamsSeries = state.williamsUpperSeries = state.williamsLowerSeries = null;
+    state.momentumSeries = state.momentumZeroSeries = null;
+    state.rocSeries = state.rocZeroSeries = null;
     state._indSig = null;
 
     const baseVal = state.selectedAsset ? Number(state.selectedAsset.base) : 1.0;
@@ -700,15 +841,34 @@
       priceScaleId: 'right',
     };
 
+    // Area/line follow the session trend colour (see areaTrendColor).
+    const trendColor = areaTrendColor();
+    state._areaTrendColor = trendColor;
     if (state.chartType === 'area') {
       state.series = state.chart.addAreaSeries({
         ...commonSeriesOpts,
-        topColor: hexToRgba(state.settings.upColor, 0.35),
-        bottomColor: hexToRgba(state.settings.upColor, 0.0),
-        lineColor: state.settings.upColor,
+        topColor: hexToRgba(trendColor, 0.35),
+        bottomColor: hexToRgba(trendColor, 0.0),
+        lineColor: trendColor,
         lineWidth: 2,
       });
+    } else if (state.chartType === 'line') {
+      state.series = state.chart.addLineSeries({
+        ...commonSeriesOpts,
+        color: trendColor,
+        lineWidth: 2,
+      });
+    } else if (state.chartType === 'bar') {
+      // Native bar series (lightweight-charts 4.x): same OHLC data as
+      // candles, coloured with the user's Up/Down trend colours.
+      state.series = state.chart.addBarSeries({
+        ...commonSeriesOpts,
+        upColor: state.settings.upColor,
+        downColor: state.settings.downColor,
+      });
     } else {
+      // 'candles' and 'heikenashi' both render on a candlestick series;
+      // Heiken Ashi just feeds transformed OHLC data (see seriesDataForType).
       state.series = state.chart.addCandlestickSeries({
         ...commonSeriesOpts,
         upColor: state.settings.upColor,
@@ -1130,12 +1290,8 @@
 
   function updateSeriesData(shouldFit = true) {
     if (!state.series) return;
-    if (state.chartType === 'area') {
-      const areaData = state.candles.map(c => ({ time: c.time, value: c.close }));
-      state.series.setData(areaData);
-    } else {
-      state.series.setData(state.candles);
-    }
+    state.series.setData(seriesDataForType());
+    refreshAreaTrendColor();
     if (shouldFit && (state.settings.autoScroll || state._forceFitNext)) {
       applyDefaultVisibleRange();
     }
@@ -1144,6 +1300,274 @@
       state.chart.priceScale('right').applyOptions({ autoScale: true });
     } catch (e) {}
     updateIndicators();
+  }
+
+  // --- Indicator toggles persistence (per asset, like drawings) ---
+  // The gap report flagged "no indicator persistence": toggles used to be
+  // in-memory only, so switching assets (or reloading) lost them. The full
+  // 12-indicator set is now saved per asset symbol in localStorage.
+  const INDICATOR_KEYS = ['sma', 'ema', 'bollinger', 'rsi', 'macd', 'stochastic', 'cci', 'adx', 'atr', 'williams', 'momentum', 'roc'];
+  const INDICATOR_CHECKBOX_IDS = {
+    sma: 'chk-ind-sma', ema: 'chk-ind-ema', bollinger: 'chk-ind-bollinger', rsi: 'chk-ind-rsi',
+    macd: 'chk-ind-macd', stochastic: 'chk-ind-stochastic', cci: 'chk-ind-cci', adx: 'chk-ind-adx',
+    atr: 'chk-ind-atr', williams: 'chk-ind-williams', momentum: 'chk-ind-momentum', roc: 'chk-ind-roc',
+  };
+
+  function indicatorsKey() {
+    return 'qx-indicators-' + (state.selectedAsset ? state.selectedAsset.symbol : 'default');
+  }
+
+  function syncIndicatorCheckboxes() {
+    INDICATOR_KEYS.forEach(k => {
+      const cb = document.getElementById(INDICATOR_CHECKBOX_IDS[k]);
+      if (cb) cb.checked = !!state.indicators[k];
+    });
+  }
+
+  function loadIndicators() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(indicatorsKey()) || '{}');
+      if (saved && typeof saved === 'object') {
+        INDICATOR_KEYS.forEach(k => { if (typeof saved[k] === 'boolean') state.indicators[k] = saved[k]; });
+      }
+    } catch (e) {}
+    syncIndicatorCheckboxes();
+  }
+
+  function saveIndicators() {
+    try { localStorage.setItem(indicatorsKey(), JSON.stringify(state.indicators)); } catch (e) {}
+  }
+
+  // --- Indicator math helpers (pure functions: candles in, {time, value}[] out) ---
+  // The Node verification script extracts the block between the
+  // @indicator-math-start / @indicator-math-end markers below and runs
+  // it against hand-computed values, so keep these functions dependency-free
+  // (no `state`, no DOM, no chart calls).
+  // @indicator-math-start
+  function emaValues(values, period) {
+    // EMA seeded with the SMA of the first `period` values. Returns an
+    // array the same length as `values`, null before the first computable
+    // point (index period - 1).
+    const out = new Array(values.length).fill(null);
+    if (values.length < period || period < 1) return out;
+    const k = 2 / (period + 1);
+    let prev = 0;
+    for (let i = 0; i < period; i++) prev += values[i];
+    prev /= period;
+    out[period - 1] = prev;
+    for (let i = period; i < values.length; i++) {
+      prev = (values[i] - prev) * k + prev;
+      out[i] = prev;
+    }
+    return out;
+  }
+
+  function smaValues(values, period) {
+    const out = new Array(values.length).fill(null);
+    if (values.length < period || period < 1) return out;
+    let sum = 0;
+    for (let i = 0; i < values.length; i++) {
+      sum += values[i];
+      if (i >= period) sum -= values[i - period];
+      if (i >= period - 1) out[i] = sum / period;
+    }
+    return out;
+  }
+
+  function highestHighLow(candles, i, period) {
+    let hh = -Infinity, ll = Infinity;
+    for (let j = 0; j < period; j++) {
+      const c = candles[i - j];
+      if (c.high > hh) hh = c.high;
+      if (c.low < ll) ll = c.low;
+    }
+    return { hh, ll };
+  }
+
+  function computeMacd(candles, fast = 12, slow = 26, signalPeriod = 9) {
+    // MACD line = EMA(fast) - EMA(slow); signal = EMA(signalPeriod) of
+    // the MACD line; histogram = MACD - signal. The first MACD point
+    // needs `slow` closes; the first signal point needs `signalPeriod`
+    // MACD values after that.
+    const closes = candles.map(c => c.close);
+    const fastEma = emaValues(closes, fast);
+    const slowEma = emaValues(closes, slow);
+    const macdRaw = [];
+    for (let i = 0; i < candles.length; i++) {
+      macdRaw.push((fastEma[i] === null || slowEma[i] === null) ? null : fastEma[i] - slowEma[i]);
+    }
+    const macdVals = macdRaw.filter(v => v !== null);
+    const signalRaw = emaValues(macdVals, signalPeriod);
+    const macd = [];
+    const signal = [];
+    const hist = [];
+    let j = 0;
+    for (let i = 0; i < candles.length; i++) {
+      if (macdRaw[i] === null) continue;
+      const s = signalRaw[j];
+      macd.push({ time: candles[i].time, value: macdRaw[i] });
+      if (s !== null) {
+        signal.push({ time: candles[i].time, value: s });
+        hist.push({ time: candles[i].time, value: macdRaw[i] - s });
+      }
+      j++;
+    }
+    return { macd, signal, hist };
+  }
+
+  function computeStochastic(candles, kPeriod = 14, dPeriod = 3) {
+    // %K = 100 * (close - lowest low) / (highest high - lowest low);
+    // %D = SMA(dPeriod) of %K. A flat range (high == low) yields %K = 50.
+    const k = [];
+    for (let i = kPeriod - 1; i < candles.length; i++) {
+      const { hh, ll } = highestHighLow(candles, i, kPeriod);
+      const range = hh - ll;
+      k.push({ time: candles[i].time, value: range === 0 ? 50 : 100 * (candles[i].close - ll) / range });
+    }
+    const dVals = smaValues(k.map(p => p.value), dPeriod);
+    const d = [];
+    for (let i = 0; i < k.length; i++) {
+      if (dVals[i] !== null) d.push({ time: k[i].time, value: dVals[i] });
+    }
+    return { k, d };
+  }
+
+  function computeCci(candles, period = 20) {
+    // CCI = (typical price - SMA20(TP)) / (0.015 * mean deviation),
+    // TP = (high + low + close) / 3. Mean deviation 0 (flat series)
+    // yields CCI = 0.
+    const tp = candles.map(c => (c.high + c.low + c.close) / 3);
+    const tpSma = smaValues(tp, period);
+    const out = [];
+    for (let i = period - 1; i < candles.length; i++) {
+      const mean = tpSma[i];
+      let md = 0;
+      for (let j = 0; j < period; j++) md += Math.abs(tp[i - j] - mean);
+      md /= period;
+      out.push({ time: candles[i].time, value: md === 0 ? 0 : (tp[i] - mean) / (0.015 * md) });
+    }
+    return out;
+  }
+
+  function trueRange(candles, i) {
+    if (i === 0) return candles[0].high - candles[0].low;
+    const c = candles[i], p = candles[i - 1];
+    return Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+  }
+
+  function computeAdx(candles, period = 14) {
+    // Wilder ADX: +DI/-DI from Wilder-smoothed true range and directional
+    // movement (first smoothed value = sum of the first `period` values,
+    // then prev - prev/period + current), DX = 100 * |+DI - -DI| /
+    // (+DI + -DI), ADX = Wilder-smoothed DX (first ADX = mean of the
+    // first `period` DX values, then (prev*(period-1) + DX)/period).
+    const n = candles.length;
+    const tr = [], plusDm = [], minusDm = [];
+    for (let i = 0; i < n; i++) {
+      tr.push(trueRange(candles, i));
+      if (i === 0) { plusDm.push(0); minusDm.push(0); continue; }
+      const up = candles[i].high - candles[i - 1].high;
+      const down = candles[i - 1].low - candles[i].low;
+      plusDm.push(up > down && up > 0 ? up : 0);
+      minusDm.push(down > up && down > 0 ? down : 0);
+    }
+    const wilderSumSeed = (vals) => {
+      const out = new Array(vals.length).fill(null);
+      if (vals.length < period) return out;
+      let prev = 0;
+      for (let i = 0; i < period; i++) prev += vals[i];
+      out[period - 1] = prev;
+      for (let i = period; i < vals.length; i++) {
+        prev = prev - prev / period + vals[i];
+        out[i] = prev;
+      }
+      return out;
+    };
+    const wilderAvgSeed = (vals) => {
+      const out = new Array(vals.length).fill(null);
+      if (vals.length < period) return out;
+      let prev = 0;
+      for (let i = 0; i < period; i++) prev += vals[i];
+      prev /= period;
+      out[period - 1] = prev;
+      for (let i = period; i < vals.length; i++) {
+        prev = (prev * (period - 1) + vals[i]) / period;
+        out[i] = prev;
+      }
+      return out;
+    };
+    const trS = wilderSumSeed(tr), plusS = wilderSumSeed(plusDm), minusS = wilderSumSeed(minusDm);
+    const dx = new Array(n).fill(null);
+    const plusDi = [], minusDi = [];
+    for (let i = period - 1; i < n; i++) {
+      const pdi = trS[i] === 0 ? 0 : 100 * plusS[i] / trS[i];
+      const mdi = trS[i] === 0 ? 0 : 100 * minusS[i] / trS[i];
+      plusDi.push({ time: candles[i].time, value: pdi });
+      minusDi.push({ time: candles[i].time, value: mdi });
+      const sum = pdi + mdi;
+      dx[i] = sum === 0 ? 0 : 100 * Math.abs(pdi - mdi) / sum;
+    }
+    const dxVals = dx.filter(v => v !== null);
+    const adxS = wilderAvgSeed(dxVals);
+    const adx = [];
+    for (let i = 0; i < dxVals.length; i++) {
+      if (adxS[i] !== null) adx.push({ time: plusDi[i].time, value: adxS[i] });
+    }
+    return { adx, plusDi, minusDi };
+  }
+
+  function computeAtr(candles, period = 14) {
+    // Wilder ATR: first value = mean of the first `period` true ranges,
+    // then (prev * (period - 1) + TR) / period.
+    const tr = candles.map((_, i) => trueRange(candles, i));
+    const out = [];
+    if (candles.length < period) return out;
+    let prev = 0;
+    for (let i = 0; i < period; i++) prev += tr[i];
+    prev /= period;
+    out.push({ time: candles[period - 1].time, value: prev });
+    for (let i = period; i < candles.length; i++) {
+      prev = (prev * (period - 1) + tr[i]) / period;
+      out.push({ time: candles[i].time, value: prev });
+    }
+    return out;
+  }
+
+  function computeWilliams(candles, period = 14) {
+    // %R = -100 * (highest high - close) / (highest high - lowest low).
+    // A flat range yields -50.
+    const out = [];
+    for (let i = period - 1; i < candles.length; i++) {
+      const { hh, ll } = highestHighLow(candles, i, period);
+      const range = hh - ll;
+      out.push({ time: candles[i].time, value: range === 0 ? -50 : -100 * (hh - candles[i].close) / range });
+    }
+    return out;
+  }
+
+  function computeMomentum(candles, period = 10) {
+    const out = [];
+    for (let i = period; i < candles.length; i++) {
+      out.push({ time: candles[i].time, value: candles[i].close - candles[i - period].close });
+    }
+    return out;
+  }
+
+  function computeRoc(candles, period = 10) {
+    // ROC = 100 * (close - close N ago) / close N ago.
+    const out = [];
+    for (let i = period; i < candles.length; i++) {
+      const base = candles[i - period].close;
+      out.push({ time: candles[i].time, value: base === 0 ? 0 : 100 * (candles[i].close - base) / base });
+    }
+    return out;
+  }
+  // @indicator-math-end
+
+  // Oscillator panes sit in the same bottom strip as RSI (top 0.78 /
+  // bottom 0.02), each on its own price scale like RSI does.
+  function applyOscScaleMargins(scaleId) {
+    try { state.chart.priceScale(scaleId).applyOptions({ scaleMargins: { top: 0.78, bottom: 0.02 } }); } catch (e) {}
   }
 
   // --- Technical Indicators Computation (SMA, EMA, Bollinger Bands) ---
@@ -1157,13 +1581,23 @@
     const lastCandle = state.candles[state.candles.length - 1];
     const indSig = [
       state.indicators.sma, state.indicators.ema, state.indicators.bollinger, state.indicators.rsi,
+      state.indicators.macd, state.indicators.stochastic, state.indicators.cci, state.indicators.adx,
+      state.indicators.atr, state.indicators.williams, state.indicators.momentum, state.indicators.roc,
       state.candles.length, lastCandle.time,
     ].join('|');
     const seriesReady =
       (!state.indicators.sma || state.smaSeries) &&
       (!state.indicators.ema || state.emaSeries) &&
       (!state.indicators.bollinger || (state.bbUpperSeries && state.bbLowerSeries)) &&
-      (!state.indicators.rsi || (state.rsiSeries && state.rsiUpperSeries && state.rsiLowerSeries));
+      (!state.indicators.rsi || (state.rsiSeries && state.rsiUpperSeries && state.rsiLowerSeries)) &&
+      (!state.indicators.macd || (state.macdSeries && state.macdSignalSeries && state.macdHistSeries)) &&
+      (!state.indicators.stochastic || (state.stochKSeries && state.stochDSeries && state.stochUpperSeries && state.stochLowerSeries)) &&
+      (!state.indicators.cci || (state.cciSeries && state.cciUpperSeries && state.cciLowerSeries)) &&
+      (!state.indicators.adx || (state.adxSeries && state.adxPlusDiSeries && state.adxMinusDiSeries)) &&
+      (!state.indicators.atr || state.atrSeries) &&
+      (!state.indicators.williams || (state.williamsSeries && state.williamsUpperSeries && state.williamsLowerSeries)) &&
+      (!state.indicators.momentum || (state.momentumSeries && state.momentumZeroSeries)) &&
+      (!state.indicators.roc || (state.rocSeries && state.rocZeroSeries));
     if (state.settings.performanceMode && indSig === state._indSig && seriesReady) return;
     state._indSig = indSig;
 
@@ -1342,6 +1776,317 @@
       state.rsiSeries = state.rsiUpperSeries = state.rsiLowerSeries = null;
     }
 
+    // 5. MACD (12, 26, 9) — own scale; histogram as a histogram series
+    // (green bars above zero, red below), MACD + signal as lines.
+    if (state.indicators.macd) {
+      if (!state.macdSeries) {
+        state.macdSeries = state.chart.addLineSeries({
+          color: '#26a69a',
+          lineWidth: 2,
+          title: 'MACD 12,26,9',
+          priceScaleId: 'macd',
+        });
+        applyOscScaleMargins('macd');
+      }
+      if (!state.macdSignalSeries) {
+        state.macdSignalSeries = state.chart.addLineSeries({
+          color: '#ef5350',
+          lineWidth: 1,
+          title: 'MACD Signal',
+          priceScaleId: 'macd',
+        });
+      }
+      if (!state.macdHistSeries) {
+        state.macdHistSeries = state.chart.addHistogramSeries({
+          priceScaleId: 'macd',
+          title: 'MACD Hist',
+          priceFormat: { type: 'price', precision: prec, minMove: Math.pow(10, -prec) },
+        });
+      }
+      const macd = computeMacd(state.candles);
+      const macdData = macd.macd.map(p => ({ time: p.time, value: +p.value.toFixed(prec) }));
+      const macdSignalData = macd.signal.map(p => ({ time: p.time, value: +p.value.toFixed(prec) }));
+      const macdHistData = macd.hist.map(p => ({ time: p.time, value: +p.value.toFixed(prec), color: p.value >= 0 ? '#26a69a' : '#ef5350' }));
+      state.macdSeries.setData(macdData);
+      state.macdSignalSeries.setData(macdSignalData);
+      state.macdHistSeries.setData(macdHistData);
+      if (macdData.length) legendParts.push(`<span style="color:#26a69a">MACD 12,26,9 ${macdData[macdData.length - 1].value.toFixed(prec)}</span>`);
+    } else {
+      [state.macdSeries, state.macdSignalSeries, state.macdHistSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.macdSeries = state.macdSignalSeries = state.macdHistSeries = null;
+    }
+
+    // 6. Stochastic (14, 3, 3) — own scale with 80 / 20 reference lines.
+    if (state.indicators.stochastic) {
+      if (!state.stochKSeries) {
+        state.stochKSeries = state.chart.addLineSeries({
+          color: '#ab47bc',
+          lineWidth: 2,
+          title: 'Stoch %K',
+          priceScaleId: 'stoch',
+        });
+        applyOscScaleMargins('stoch');
+      }
+      if (!state.stochDSeries) {
+        state.stochDSeries = state.chart.addLineSeries({
+          color: '#ff6d00',
+          lineWidth: 1,
+          title: 'Stoch %D',
+          priceScaleId: 'stoch',
+        });
+      }
+      if (!state.stochUpperSeries) {
+        state.stochUpperSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'Stoch 80',
+          priceScaleId: 'stoch',
+        });
+      }
+      if (!state.stochLowerSeries) {
+        state.stochLowerSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'Stoch 20',
+          priceScaleId: 'stoch',
+        });
+      }
+      const stoch = computeStochastic(state.candles);
+      const kData = stoch.k.map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const dData = stoch.d.map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const stochUpperRef = [];
+      const stochLowerRef = [];
+      kData.forEach(p => { stochUpperRef.push({ time: p.time, value: 80 }); stochLowerRef.push({ time: p.time, value: 20 }); });
+      state.stochKSeries.setData(kData);
+      state.stochDSeries.setData(dData);
+      state.stochUpperSeries.setData(stochUpperRef);
+      state.stochLowerSeries.setData(stochLowerRef);
+      if (kData.length) legendParts.push(`<span style="color:#ab47bc">Stoch 14,3,3 ${kData[kData.length - 1].value.toFixed(2)} / ${dData.length ? dData[dData.length - 1].value.toFixed(2) : '—'}</span>`);
+    } else {
+      [state.stochKSeries, state.stochDSeries, state.stochUpperSeries, state.stochLowerSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.stochKSeries = state.stochDSeries = state.stochUpperSeries = state.stochLowerSeries = null;
+    }
+
+    // 7. CCI (20) — own scale with +100 / -100 reference lines.
+    if (state.indicators.cci) {
+      if (!state.cciSeries) {
+        state.cciSeries = state.chart.addLineSeries({
+          color: '#5c6bc0',
+          lineWidth: 2,
+          title: 'CCI 20',
+          priceScaleId: 'cci',
+        });
+        applyOscScaleMargins('cci');
+      }
+      if (!state.cciUpperSeries) {
+        state.cciUpperSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'CCI 100',
+          priceScaleId: 'cci',
+        });
+      }
+      if (!state.cciLowerSeries) {
+        state.cciLowerSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'CCI -100',
+          priceScaleId: 'cci',
+        });
+      }
+      const cciData = computeCci(state.candles).map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const cciUpperRef = [];
+      const cciLowerRef = [];
+      cciData.forEach(p => { cciUpperRef.push({ time: p.time, value: 100 }); cciLowerRef.push({ time: p.time, value: -100 }); });
+      state.cciSeries.setData(cciData);
+      state.cciUpperSeries.setData(cciUpperRef);
+      state.cciLowerSeries.setData(cciLowerRef);
+      if (cciData.length) legendParts.push(`<span style="color:#5c6bc0">CCI 20 ${cciData[cciData.length - 1].value.toFixed(2)}</span>`);
+    } else {
+      [state.cciSeries, state.cciUpperSeries, state.cciLowerSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.cciSeries = state.cciUpperSeries = state.cciLowerSeries = null;
+    }
+
+    // 8. ADX (14) — own scale; ADX line plus +DI / -DI lines.
+    if (state.indicators.adx) {
+      if (!state.adxSeries) {
+        state.adxSeries = state.chart.addLineSeries({
+          color: '#f06292',
+          lineWidth: 2,
+          title: 'ADX 14',
+          priceScaleId: 'adx',
+        });
+        applyOscScaleMargins('adx');
+      }
+      if (!state.adxPlusDiSeries) {
+        state.adxPlusDiSeries = state.chart.addLineSeries({
+          color: '#26a69a',
+          lineWidth: 1,
+          title: '+DI',
+          priceScaleId: 'adx',
+        });
+      }
+      if (!state.adxMinusDiSeries) {
+        state.adxMinusDiSeries = state.chart.addLineSeries({
+          color: '#ef5350',
+          lineWidth: 1,
+          title: '-DI',
+          priceScaleId: 'adx',
+        });
+      }
+      const adx = computeAdx(state.candles);
+      const adxData = adx.adx.map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const plusDiData = adx.plusDi.map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const minusDiData = adx.minusDi.map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      state.adxSeries.setData(adxData);
+      state.adxPlusDiSeries.setData(plusDiData);
+      state.adxMinusDiSeries.setData(minusDiData);
+      if (adxData.length) legendParts.push(`<span style="color:#f06292">ADX 14 ${adxData[adxData.length - 1].value.toFixed(2)}</span>`);
+    } else {
+      [state.adxSeries, state.adxPlusDiSeries, state.adxMinusDiSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.adxSeries = state.adxPlusDiSeries = state.adxMinusDiSeries = null;
+    }
+
+    // 9. ATR (14) — own scale (its values are far smaller than price, so
+    // the price scale would flatten it into an unreadable line).
+    if (state.indicators.atr) {
+      if (!state.atrSeries) {
+        state.atrSeries = state.chart.addLineSeries({
+          color: '#ff7043',
+          lineWidth: 2,
+          title: 'ATR 14',
+          priceScaleId: 'atr',
+        });
+        applyOscScaleMargins('atr');
+      }
+      const atrData = computeAtr(state.candles).map(p => ({ time: p.time, value: +p.value.toFixed(prec) }));
+      state.atrSeries.setData(atrData);
+      if (atrData.length) legendParts.push(`<span style="color:#ff7043">ATR 14 ${atrData[atrData.length - 1].value.toFixed(prec)}</span>`);
+    } else if (state.atrSeries) {
+      state.chart.removeSeries(state.atrSeries);
+      state.atrSeries = null;
+    }
+
+    // 10. Williams %R (14) — own scale with -20 / -80 reference lines.
+    if (state.indicators.williams) {
+      if (!state.williamsSeries) {
+        state.williamsSeries = state.chart.addLineSeries({
+          color: '#29b6f6',
+          lineWidth: 2,
+          title: 'Williams %R 14',
+          priceScaleId: 'williams',
+        });
+        applyOscScaleMargins('williams');
+      }
+      if (!state.williamsUpperSeries) {
+        state.williamsUpperSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: '%R -20',
+          priceScaleId: 'williams',
+        });
+      }
+      if (!state.williamsLowerSeries) {
+        state.williamsLowerSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: '%R -80',
+          priceScaleId: 'williams',
+        });
+      }
+      const williamsData = computeWilliams(state.candles).map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const williamsUpperRef = [];
+      const williamsLowerRef = [];
+      williamsData.forEach(p => { williamsUpperRef.push({ time: p.time, value: -20 }); williamsLowerRef.push({ time: p.time, value: -80 }); });
+      state.williamsSeries.setData(williamsData);
+      state.williamsUpperSeries.setData(williamsUpperRef);
+      state.williamsLowerSeries.setData(williamsLowerRef);
+      if (williamsData.length) legendParts.push(`<span style="color:#29b6f6">Williams %R 14 ${williamsData[williamsData.length - 1].value.toFixed(2)}</span>`);
+    } else {
+      [state.williamsSeries, state.williamsUpperSeries, state.williamsLowerSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.williamsSeries = state.williamsUpperSeries = state.williamsLowerSeries = null;
+    }
+
+    // 11. Momentum (10) — own scale with a zero reference line.
+    if (state.indicators.momentum) {
+      if (!state.momentumSeries) {
+        state.momentumSeries = state.chart.addLineSeries({
+          color: '#66bb6a',
+          lineWidth: 2,
+          title: 'Momentum 10',
+          priceScaleId: 'momentum',
+        });
+        applyOscScaleMargins('momentum');
+      }
+      if (!state.momentumZeroSeries) {
+        state.momentumZeroSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'Momentum 0',
+          priceScaleId: 'momentum',
+        });
+      }
+      const momentumData = computeMomentum(state.candles).map(p => ({ time: p.time, value: +p.value.toFixed(prec) }));
+      const momentumZeroRef = momentumData.map(p => ({ time: p.time, value: 0 }));
+      state.momentumSeries.setData(momentumData);
+      state.momentumZeroSeries.setData(momentumZeroRef);
+      if (momentumData.length) legendParts.push(`<span style="color:#66bb6a">Momentum 10 ${momentumData[momentumData.length - 1].value.toFixed(prec)}</span>`);
+    } else {
+      [state.momentumSeries, state.momentumZeroSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.momentumSeries = state.momentumZeroSeries = null;
+    }
+
+    // 12. ROC (10) — own scale with a zero reference line.
+    if (state.indicators.roc) {
+      if (!state.rocSeries) {
+        state.rocSeries = state.chart.addLineSeries({
+          color: '#ffa726',
+          lineWidth: 2,
+          title: 'ROC 10',
+          priceScaleId: 'roc',
+        });
+        applyOscScaleMargins('roc');
+      }
+      if (!state.rocZeroSeries) {
+        state.rocZeroSeries = state.chart.addLineSeries({
+          color: 'rgba(255, 255, 255, 0.35)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: 'ROC 0',
+          priceScaleId: 'roc',
+        });
+      }
+      const rocData = computeRoc(state.candles).map(p => ({ time: p.time, value: +p.value.toFixed(2) }));
+      const rocZeroRef = rocData.map(p => ({ time: p.time, value: 0 }));
+      state.rocSeries.setData(rocData);
+      state.rocZeroSeries.setData(rocZeroRef);
+      if (rocData.length) legendParts.push(`<span style="color:#ffa726">ROC 10 ${rocData[rocData.length - 1].value.toFixed(2)}%</span>`);
+    } else {
+      [state.rocSeries, state.rocZeroSeries].forEach(s => {
+        if (s) { try { state.chart.removeSeries(s); } catch (e) {} }
+      });
+      state.rocSeries = state.rocZeroSeries = null;
+    }
+
     // Small legend (top-left of the chart) showing the live value of every
     // enabled indicator, so the indicators are visible at a glance.
     const legendEl = document.getElementById('indicators-legend');
@@ -1377,6 +2122,132 @@
     return hexToRgba(base, op);
   }
 
+  // --- Timezone (Team C, P1) ---
+  // The clock used to show the visitor's local time while permanently
+  // labelled "UTC+5", and the Settings timezone control was display-only
+  // (hidden input, no options, no handler). The selected zone now drives
+  // the clock (time + offset label) and every displayed time on the trade
+  // page. Default Asia/Karachi preserves the old UTC+5 behaviour.
+  const TIMEZONE_OPTIONS = [
+    'UTC',
+    'Asia/Karachi',
+    'Europe/London',
+    'America/New_York',
+    'Asia/Dubai',
+    'Asia/Dhaka',
+    'Europe/Berlin',
+    'Asia/Tokyo',
+  ];
+  const DEFAULT_TIMEZONE = 'Asia/Karachi';
+
+  function getSelectedTimeZone() {
+    const tz = state.settings.timezone;
+    return TIMEZONE_OPTIONS.includes(tz) ? tz : DEFAULT_TIMEZONE;
+  }
+
+  // UTC offset of an IANA zone at a given instant, in minutes (DST-aware).
+  function tzOffsetMinutes(tz, date = new Date()) {
+    try {
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      });
+      const parts = dtf.formatToParts(date);
+      const get = (t) => Number((parts.find(p => p.type === t) || {}).value || 0);
+      const asUTC = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+      return Math.round((asUTC - date.getTime()) / 60000);
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // "UTC+5" / "UTC-4" / "UTC+5:30" — same short style as the old label.
+  function tzOffsetLabel(tz, date = new Date()) {
+    const mins = tzOffsetMinutes(tz, date);
+    const sign = mins >= 0 ? '+' : '-';
+    const abs = Math.abs(mins);
+    const h = Math.floor(abs / 60);
+    const m = abs % 60;
+    return 'UTC' + sign + h + (m ? ':' + String(m).padStart(2, '0') : '');
+  }
+
+  // "21:22:34" in the selected zone.
+  function formatTimeInTz(date, withSeconds = true) {
+    try {
+      return new Intl.DateTimeFormat('en-GB', {
+        timeZone: getSelectedTimeZone(),
+        hour: '2-digit', minute: '2-digit',
+        ...(withSeconds ? { second: '2-digit' } : {}),
+        hourCycle: 'h23',
+      }).format(date);
+    } catch (e) {
+      return date.toTimeString().split(' ')[0];
+    }
+  }
+
+  // "14.11.2026 21:22:34" — same shape as the server-rendered trade times.
+  function formatDateTimeInTz(date) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: getSelectedTimeZone(),
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      }).formatToParts(date);
+      const get = (t) => (parts.find(p => p.type === t) || {}).value || '';
+      return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
+    } catch (e) {
+      return date.toLocaleString();
+    }
+  }
+
+  // "14 NOVEMBER" — the trades date-banner shape.
+  function formatDateInTz(date) {
+    try {
+      return new Intl.DateTimeFormat('en-GB', {
+        timeZone: getSelectedTimeZone(), day: 'numeric', month: 'long',
+      }).format(date).toUpperCase();
+    } catch (e) {
+      const months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+      return `${date.getDate()} ${months[date.getMonth()]}`;
+    }
+  }
+
+  // Keep the Settings <select> in sync: value + per-option live offsets
+  // (so London / New York / Berlin stay right across DST changes).
+  function syncTimezoneSelect() {
+    const sel = document.getElementById('timezone-select');
+    if (!sel) return;
+    const now = new Date();
+    Array.from(sel.options).forEach(opt => {
+      if (!opt.dataset.name) opt.dataset.name = opt.textContent.replace(/\s*\(UTC[^)]*\)\s*$/, '').trim();
+      opt.textContent = opt.value === 'UTC' ? 'UTC' : `${opt.dataset.name} (${tzOffsetLabel(opt.value, now)})`;
+    });
+    sel.value = getSelectedTimeZone();
+  }
+
+  // Re-render every displayed time on the trade page in the selected zone:
+  // clock, server-rendered trade times (.tz-datetime), JS-rendered trade
+  // times (.tz-time), date banner, expiry display, pending-order times.
+  function applyTimezone() {
+    updateLiveClock();
+    document.querySelectorAll('.tz-datetime').forEach(elm => {
+      const ts = Number(elm.dataset.ts || 0);
+      if (ts > 0) elm.textContent = formatDateTimeInTz(new Date(ts * 1000));
+    });
+    document.querySelectorAll('.tz-time').forEach(elm => {
+      const ts = Number(elm.dataset.ts || 0);
+      if (ts > 0) elm.textContent = formatTimeInTz(new Date(ts * 1000));
+    });
+    updateDateBanner();
+    renderTimeDisplay();
+    const curTime = document.getElementById('pending-cur-time-lbl');
+    if (curTime) curTime.textContent = formatTimeInTz(new Date());
+    // Pending-order rows embed their trigger time; re-render the list so
+    // the "at …" text follows the new zone.
+    if (typeof renderPendingOrders === 'function') renderPendingOrders();
+    syncTimezoneSelect();
+  }
+
   function saveSettings() {
     try { localStorage.setItem('qx-trade-settings', JSON.stringify(state.settings)); } catch (e) {}
   }
@@ -1387,9 +2258,10 @@
       if (saved && typeof saved === 'object') {
         if (['light', 'twilight', 'night'].includes(saved.theme)) state.settings.theme = saved.theme;
         if (typeof saved.gridOpacity === 'number') state.settings.gridOpacity = Math.max(0, Math.min(10, saved.gridOpacity));
-        ['autoScroll', 'oneClick', 'performanceMode', 'shortOrderLabel', 'hideResults', 'sound'].forEach(k => {
+        ['autoScroll', 'oneClick', 'performanceMode', 'shortOrderLabel', 'hideResults', 'hideBalance', 'sound'].forEach(k => {
           if (typeof saved[k] === 'boolean') state.settings[k] = saved[k];
         });
+        if (typeof saved.timezone === 'string' && TIMEZONE_OPTIONS.includes(saved.timezone)) state.settings.timezone = saved.timezone;
         if (typeof saved.upColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(saved.upColor)) state.settings.upColor = saved.upColor;
         if (typeof saved.downColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(saved.downColor)) state.settings.downColor = saved.downColor;
         if (typeof saved.chartBg === 'string' && saved.chartBg.startsWith('data:image')) state.settings.chartBg = saved.chartBg;
@@ -1397,6 +2269,13 @@
     } catch (e) {}
     state.oneClick = state.settings.oneClick;
     soundContext.enabled = state.settings.sound;
+    // Restore the saved chart type (default 'candles') and mark it in
+    // the chart-type popover.
+    try {
+      const savedType = localStorage.getItem(CHART_TYPE_STORAGE_KEY);
+      if (CHART_TYPES.includes(savedType)) state.chartType = savedType;
+    } catch (e) {}
+    document.querySelectorAll('.ct-grid-btn').forEach(b => b.classList.toggle('active', b.dataset.chartType === state.chartType));
     applyTheme(state.settings.theme, { save: false });
     applySettingsToUI();
   }
@@ -1428,13 +2307,26 @@
     });
     if (state.series) {
       try {
-        if (state.chartType === 'area') {
+        if (state.chartType === 'area' || state.chartType === 'line') {
+          // Area/line follow the session trend colour (see areaTrendColor).
+          state._areaTrendColor = areaTrendColor();
+          const c = state._areaTrendColor;
+          if (state.chartType === 'area') {
+            state.series.applyOptions({
+              lineColor: c,
+              topColor: hexToRgba(c, 0.35),
+              bottomColor: hexToRgba(c, 0.0),
+            });
+          } else {
+            state.series.applyOptions({ color: c });
+          }
+        } else if (state.chartType === 'bar') {
           state.series.applyOptions({
-            lineColor: state.settings.upColor,
-            topColor: hexToRgba(state.settings.upColor, 0.35),
-            bottomColor: hexToRgba(state.settings.upColor, 0.0),
+            upColor: state.settings.upColor,
+            downColor: state.settings.downColor,
           });
         } else {
+          // 'candles' and 'heikenashi' (both candlestick series).
           state.series.applyOptions({
             upColor: state.settings.upColor,
             downColor: state.settings.downColor,
@@ -1504,6 +2396,17 @@
     document.body.classList.toggle('short-order-labels', state.settings.shortOrderLabel);
     applyHideResults();
     applySoundButton();
+    applyBalanceVisibility();
+    applyTimezone();
+  }
+
+  // Balance for %-mode math: the header value, unless the eye button
+  // currently masks it — then the last known real value (state.balance,
+  // kept current by init + refill). Without this, hiding the balance
+  // would silently compute %-mode investments against a $10,000 fallback.
+  function displayedBalance() {
+    const parsed = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '');
+    return isNaN(parsed) ? (state.balance || 10000) : parsed;
   }
 
   function applySoundButton() {
@@ -1512,6 +2415,37 @@
     btn.classList.toggle('muted', !soundContext.enabled);
     btn.title = soundContext.enabled ? 'Sound On — click to mute' : 'Sound Off — click to unmute';
     btn.style.opacity = soundContext.enabled ? '1' : '0.45';
+  }
+
+  // Balance hide/show (trade-page eye button in the account popover).
+  // The eye had no handler; it now masks every balance on the trade page
+  // (header + account popover) with •••••• and persists in settings.
+  // Real values are kept in a WeakMap so a refill while hidden neither
+  // leaks the new balance nor loses the stored one.
+  const realBalanceTexts = new WeakMap();
+
+  function balanceValueElements() {
+    return Array.from(document.querySelectorAll('#account-balance, .acc-balance-val, #dd-demo-balance'));
+  }
+
+  function applyBalanceVisibility() {
+    const hidden = !!state.settings.hideBalance;
+    balanceValueElements().forEach(elm => {
+      if (hidden) {
+        // Refresh the stored value when the element currently shows a
+        // real figure (e.g. after a demo refill while hidden).
+        if (elm.textContent !== '••••••') realBalanceTexts.set(elm, elm.textContent);
+        elm.textContent = '••••••';
+      } else if (realBalanceTexts.has(elm)) {
+        elm.textContent = realBalanceTexts.get(elm);
+        realBalanceTexts.delete(elm);
+      }
+    });
+    const eye = document.getElementById('btn-hide-balance');
+    if (eye) {
+      eye.style.opacity = hidden ? '0.45' : '1';
+      eye.title = hidden ? 'Show Balance' : 'Hide Balance';
+    }
   }
 
   window.toggleSound = function () {
@@ -1543,6 +2477,10 @@
       document.body.classList.toggle('short-order-labels', state.settings.shortOrderLabel);
     });
     bindChk('chk-hide-results', 'hideResults', applyHideResults);
+    bindChk('chk-sound', 'sound', () => {
+      soundContext.enabled = state.settings.sound;
+      applySoundButton();
+    });
     const upInp = document.getElementById('up-trend-color');
     if (upInp) upInp.addEventListener('input', () => {
       state.settings.upColor = upInp.value;
@@ -1555,6 +2493,21 @@
       applyChartColors();
       saveSettings();
     });
+    // Timezone: a real control now (was a hidden input with no handler).
+    // Changing it persists the zone and re-renders the clock + every
+    // displayed time on the trade page in that zone.
+    const tzSel = document.getElementById('timezone-select');
+    if (tzSel) {
+      tzSel.addEventListener('change', () => {
+        if (TIMEZONE_OPTIONS.includes(tzSel.value)) {
+          state.settings.timezone = tzSel.value;
+          saveSettings();
+          applyTimezone();
+        } else {
+          tzSel.value = getSelectedTimeZone();
+        }
+      });
+    }
   }
 
   window.handleChartBackgroundUpload = function (input) {
@@ -1590,14 +2543,14 @@
     if (!modal || !text) { doPlaceTrade(direction); return; }
     let invest = state.investment;
     if (state.investMode === 'percent') {
-      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
+      const userBalance = displayedBalance();
       invest = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
     }
     if (invest > MAX_TRADE_INVESTMENT) {
       showToast('Error', `Maximum trade amount is $${MAX_TRADE_INVESTMENT.toLocaleString('en-US')}.`, 'loss');
       return;
     }
-    text.textContent = `${direction === 'up' ? '↑ Buy' : '↓ Sell'} — ${state.selectedAsset?.symbol || ''} · ${invest} $ · ${state.durationSeconds}s`;
+    text.textContent = `${direction === 'up' ? '↑ Buy' : '↓ Sell'} — ${state.selectedAsset?.symbol || ''} · $${invest} · ${state.durationSeconds}s`;
     state._pendingTradeDirection = direction;
     modal.style.display = 'flex';
   };
@@ -1608,11 +2561,72 @@
     state._pendingTradeDirection = null;
   };
 
+  // Generic centered in-app alert (Team H) — same pattern as the trade
+  // confirm / daily-limit modals; use instead of native alert().
+  window.showAppAlert = function (title, message) {
+    const modal = document.getElementById('app-alert-modal');
+    const titleEl = document.getElementById('app-alert-title');
+    const textEl = document.getElementById('app-alert-text');
+    if (!modal || !textEl) return;
+    if (titleEl) titleEl.textContent = title || 'Notice';
+    textEl.textContent = message || '';
+    modal.style.display = 'flex';
+  };
+
+  window.closeAppAlert = function () {
+    const modal = document.getElementById('app-alert-modal');
+    if (modal) modal.style.display = 'none';
+  };
+
   window.confirmTradePlacement = function () {
     const dir = state._pendingTradeDirection;
     closeTradeConfirm();
     if (dir) doPlaceTrade(dir);
   };
+
+  // Daily limit — centered in-app modal (same pattern as the trade
+  // confirm modal), never a native alert(). The value is stored in
+  // localStorage and shown in the account popover; it is a display /
+  // reminder limit only — it does not block trades server-side.
+  const DAILY_LIMIT_KEY = 'qx.dailyLimit.v1';
+  window.openDailyLimitModal = function () {
+    const modal = document.getElementById('daily-limit-modal');
+    const input = document.getElementById('daily-limit-input');
+    if (!modal || !input) return;
+    let stored = null;
+    try { stored = localStorage.getItem(DAILY_LIMIT_KEY); } catch (e) {}
+    input.value = stored || '';
+    modal.style.display = 'flex';
+    setTimeout(() => input.focus(), 0);
+  };
+  window.closeDailyLimitModal = function () {
+    const modal = document.getElementById('daily-limit-modal');
+    if (modal) modal.style.display = 'none';
+  };
+  window.saveDailyLimit = function () {
+    const input = document.getElementById('daily-limit-input');
+    const val = input ? parseFloat(input.value) : NaN;
+    if (!val || val <= 0) {
+      try { localStorage.removeItem(DAILY_LIMIT_KEY); } catch (e) {}
+      applyDailyLimitNote();
+      window.closeDailyLimitModal();
+      return;
+    }
+    try { localStorage.setItem(DAILY_LIMIT_KEY, String(val)); } catch (e) {}
+    applyDailyLimitNote();
+    window.closeDailyLimitModal();
+    showToast('Daily limit set', `Daily limit is now $${val.toFixed(2)}.`, 'info');
+  };
+  function applyDailyLimitNote() {
+    let stored = null;
+    try { stored = localStorage.getItem(DAILY_LIMIT_KEY); } catch (e) {}
+    document.querySelectorAll('.acc-limit-note').forEach(note => {
+      note.textContent = stored
+        ? `Daily limit: $${parseFloat(stored).toFixed(2)}`
+        : 'The daily limit is not set';
+    });
+  }
+  window.applyDailyLimitNote = applyDailyLimitNote;
 
   let livePriceSocket = null;
   function connectLiveCryptoStream(symbol) {
@@ -1640,22 +2654,15 @@
         close: newClose,
       };
       state.candles.push(newCandle);
-      if (state.chartType === 'area') {
-        state.series.update({ time: currentCandleStart, value: newClose });
-      } else {
-        state.series.update(newCandle);
-      }
+      state.series.update(seriesTickUpdate(newCandle, newClose));
       updateIndicators();
     } else {
       last.high = +Math.max(last.high, newClose).toFixed(prec);
       last.low  = +Math.min(last.low, newClose).toFixed(prec);
       last.close = newClose;
-      if (state.chartType === 'area') {
-        state.series.update({ time: last.time, value: newClose });
-      } else {
-        state.series.update(last);
-      }
+      state.series.update(seriesTickUpdate(last, newClose));
     }
+    refreshAreaTrendColor();
 
     state.currentPrice = newClose;
     updatePriceLabel();
@@ -1697,7 +2704,7 @@
       el.timeDisplay.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
     } else {
       const targetTime = new Date(Date.now() + state.durationSeconds * 1000);
-      el.timeDisplay.textContent = targetTime.toTimeString().split(' ')[0];
+      el.timeDisplay.textContent = formatTimeInTz(targetTime);
     }
   }
 
@@ -1724,39 +2731,37 @@
     const payoutPct = state.selectedAsset ? state.selectedAsset.payout : 82;
     let actualInvestment = state.investment;
     if (state.investMode === 'percent') {
-      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '89800');
+      // Percent of the real account balance shown in the header —
+      // never a hardcoded fallback figure.
+      const userBalance = displayedBalance();
       actualInvestment = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
     }
 
     const payout = +(actualInvestment * (1 + payoutPct / 100)).toFixed(2);
 
-    if (el.payoutDisplay) el.payoutDisplay.textContent = payout.toFixed(2) + ' $';
+    if (el.payoutDisplay) el.payoutDisplay.textContent = '$' + payout.toFixed(2);
     // The badge is a gain, not a payout: show the profit
     // (payout - investment), not the gross payout. The "Payout"
     // preview above stays gross — that one really is a payout.
     const gainBadge = document.getElementById('asset-gain');
-    if (gainBadge) gainBadge.textContent = '+' + (payout - actualInvestment).toFixed(2) + ' $';
+    if (gainBadge) gainBadge.textContent = '+$' + (payout - actualInvestment).toFixed(2);
     const investPreview = document.getElementById('invest-preview-display');
-    if (investPreview) investPreview.textContent = actualInvestment + ' $';
+    if (investPreview) investPreview.textContent = '$' + actualInvestment.toFixed(2);
+  }
+
+  // Live clock in the user's selected timezone (Settings → Timezone),
+  // with the matching UTC offset label next to it. The label is refreshed
+  // on every tick so a DST change is picked up without a reload.
+  function updateLiveClock() {
+    const clockEl = document.getElementById('live-clock');
+    if (clockEl) clockEl.textContent = formatTimeInTz(new Date());
+    const labelEl = document.getElementById('clock-tz-label');
+    if (labelEl) labelEl.textContent = tzOffsetLabel(getSelectedTimeZone());
   }
 
   function startLiveClock() {
-    const clockEl = document.getElementById('live-clock');
-    if (!clockEl) return;
-    setInterval(() => {
-      const now = new Date();
-      clockEl.textContent = now.toTimeString().split(' ')[0];
-    }, 1000);
-  }
-
-  function startLiveTickerStream() {
-    const tickerEl = document.getElementById('live-ticker-text');
-    if (!tickerEl) return;
-    setInterval(() => {
-      if (!state.selectedAsset || !state.currentPrice) return;
-      const price = (state.currentPrice + (Math.random() - 0.5) * 0.00004).toFixed(5);
-      tickerEl.textContent = `Trade opened with price: ${price} ${state.selectedAsset.symbol}`;
-    }, 4000);
+    updateLiveClock();
+    setInterval(updateLiveClock, 1000);
   }
 
   document.getElementById('btn-switch-invest-mode')?.addEventListener('click', () => {
@@ -1805,7 +2810,7 @@
 
     let investVal = state.investment;
     if (state.investMode === 'percent') {
-      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
+      const userBalance = displayedBalance();
       investVal = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
     }
 
@@ -1965,7 +2970,7 @@
   // Same $/% semantics as the main panel: percent = % of the displayed balance.
   function pendingInvestAmount() {
     if (pendingInvestMode === 'percent') {
-      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
+      const userBalance = displayedBalance();
       return Math.max(1, +(userBalance * (pendingInvestVal / 100)).toFixed(2));
     }
     return Math.max(1, pendingInvestVal);
@@ -2013,7 +3018,7 @@
         if (timeInp) timeInp.value = toLocalInputValue(new Date(Date.now() + 15 * 60 * 1000));
 
         const curTime = document.getElementById('pending-cur-time-lbl');
-        if (curTime) curTime.textContent = new Date().toTimeString().split(' ')[0];
+        if (curTime) curTime.textContent = formatTimeInTz(new Date());
 
         // Period boxes show the trade duration this order will use.
         const periodLbl = fmtPendingDuration(state.durationSeconds);
@@ -2062,7 +3067,7 @@
       const timeInp = document.getElementById('pending-time-input');
       if (timeInp && !timeInp.value) timeInp.value = toLocalInputValue(new Date(Date.now() + 15 * 60 * 1000));
       const curTime = document.getElementById('pending-cur-time-lbl');
-      if (curTime) curTime.textContent = new Date().toTimeString().split(' ')[0];
+      if (curTime) curTime.textContent = formatTimeInTz(new Date());
     }
   };
 
@@ -2071,20 +3076,20 @@
 
   window.adjustPendingAmt = function(delta) {
     pendingInvestVal = Math.max(1, pendingInvestVal + delta);
-    const suffix = pendingInvestMode === 'percent' ? ' %' : ' $';
+    const display = pendingInvestMode === 'percent' ? pendingInvestVal + ' %' : '$' + pendingInvestVal;
     const val1 = document.getElementById('pending-invest-val');
     const val2 = document.getElementById('pending-invest-time-val');
-    if (val1) val1.textContent = pendingInvestVal + suffix;
-    if (val2) val2.textContent = pendingInvestVal + suffix;
+    if (val1) val1.textContent = display;
+    if (val2) val2.textContent = display;
   };
 
   window.togglePendingMode = function() {
     pendingInvestMode = pendingInvestMode === 'percent' ? 'fixed' : 'percent';
-    const suffix = pendingInvestMode === 'percent' ? ' %' : ' $';
+    const display = pendingInvestMode === 'percent' ? pendingInvestVal + ' %' : '$' + pendingInvestVal;
     const val1 = document.getElementById('pending-invest-val');
     const val2 = document.getElementById('pending-invest-time-val');
-    if (val1) val1.textContent = pendingInvestVal + suffix;
-    if (val2) val2.textContent = pendingInvestVal + suffix;
+    if (val1) val1.textContent = display;
+    if (val2) val2.textContent = display;
   };
 
   // Create a REAL pending order (By Price / By Time). This never places an
@@ -2141,7 +3146,7 @@
         }
         const whenTxt = payload.order_type === 'price'
           ? '@ ' + formatPrice(payload.trigger_price)
-          : 'at ' + new Date(payload.trigger_time).toLocaleString();
+          : 'at ' + formatDateTimeInTz(new Date(payload.trigger_time));
         showToast(
           'Pending order created',
           `${dir === 'up' ? '↑ Buy' : '↓ Sell'} ${state.selectedAsset?.symbol || ''} ${whenTxt} — $${investVal}`,
@@ -2172,7 +3177,7 @@
   function pendingOrderRowHtml(o) {
     const dirUp = o.direction === 'up';
     const trigger = o.order_type === 'time'
-      ? 'at ' + (o.trigger_time ? new Date(o.trigger_time).toLocaleString() : '—')
+      ? 'at ' + (o.trigger_time ? formatDateTimeInTz(new Date(o.trigger_time)) : '—')
       : '@ ' + ((o.trigger_price !== null && o.trigger_price !== undefined) ? formatPrice(o.trigger_price) : '—');
     return `
       <div class="qx-deal-card pending-deal">
@@ -3028,8 +4033,12 @@
     const durSec = (trade.duration || 60) % 60;
     const durStr = String(durMin).padStart(2, '0') + ':' + String(durSec).padStart(2, '0');
 
-    // Truncate symbol with ellipsis if needed (e.g. USD/NGN (OTC) -> USD/NGN (... )
-    const displaySym = sym.length > 8 ? sym.substring(0, 8) + ' (...' : sym;
+    // Strip the "(OTC)"-style suffix for display: "USD/JPY (OTC)" shows
+    // as "USD/JPY" instead of the old mangled "USD/JPY (...". The full
+    // symbol stays in the title tooltip; .card-sym ellipsises if it is
+    // still too long.
+    const displaySym = sym.replace(/\s*\(.*?\)\s*/g, '').trim() || sym;
+    const outcomeLabel = resultClass === 'win' ? 'WIN' : (resultClass === 'loss' ? 'LOSS' : 'DRAW');
 
     const card = document.createElement('div');
     card.id = 'bottom-result-card';
@@ -3038,9 +4047,10 @@
       <div class="result-card-header">
         <div class="result-card-info">
           <span class="card-flag">${renderAssetFlagsHtml(sym, flag)}</span>
-          <span class="card-sym">${displaySym}</span>
+          <span class="card-sym" title="${sym}">${displaySym}</span>
           <span class="card-dot">•</span>
           <span class="card-dur">${durStr}</span>
+          <span class="result-card-outcome ${resultClass}">${outcomeLabel}</span>
         </div>
         <button type="button" class="result-card-close" onclick="this.closest('.bottom-result-card').remove()">✕</button>
       </div>
@@ -3056,9 +4066,8 @@
   }
 
   function updateDateBanner() {
-    const months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
-    const now = new Date();
-    const dateStr = `${now.getDate()} ${months[now.getMonth()]}`;
+    // Date in the user's selected timezone, not the browser-local date.
+    const dateStr = formatDateInTz(new Date());
     const lbl = document.getElementById('trades-date-label');
     if (lbl) lbl.textContent = dateStr;
     const dateTextEl = document.getElementById('trades-date-text');
@@ -3082,8 +4091,8 @@
 
   function formatProfit(amount) {
     const value = parseFloat(amount) || 0;
-    if (value === 0) return '0.00 $';
-    return (value > 0 ? '+' : '-') + Math.abs(value).toFixed(2) + ' $';
+    if (value === 0) return '$0.00';
+    return (value > 0 ? '+$' : '-$') + Math.abs(value).toFixed(2);
   }
 
   // Signed profit text from a settlement response: prefers the server's
@@ -3188,9 +4197,9 @@
         renderActiveTrades();
         const paidAmount = Number(data.payout || 0).toFixed(2);
         soundContext.playBeep(600, 0.08);
-        showToast('Deal Sold', `Position closed early for ${paidAmount} $`, 'info');
+        showToast('Deal Sold', `Position closed early for $${paidAmount}`, 'info');
         if (el.balanceDisplay && data.balance !== undefined) {
-          el.balanceDisplay.textContent = parseFloat(data.balance).toFixed(2) + ' $';
+          el.balanceDisplay.textContent = '$' + parseFloat(data.balance).toFixed(2);
         }
         // Record the closed trade in the history list like a normal
         // settlement (it shows the signed profit, not the buyout).
@@ -3215,7 +4224,7 @@
     // Desktop Trades List (Quotex Image 1 Exact)
     if (el.activeTradesContainer) {
       if (state.activeTrades.length === 0) {
-        el.activeTradesContainer.innerHTML = '';
+        el.activeTradesContainer.innerHTML = '<div class="empty-trades-quotex-box"><p>No active deals</p></div>';
       } else {
         el.activeTradesContainer.innerHTML = '';
         state.activeTrades.forEach(trade => {
@@ -3231,6 +4240,19 @@
           // server); the server value is authoritative at sell time.
           const sellNowVal = calculateEarlySellValue(trade, state.currentPrice);
           const profitText = formatProfit(liveProfitAmount(trade, isWin));
+
+          // Collapsed row already shows the live P/L; it now also shows
+          // the payout %, the open time and the duration/expiry, which
+          // previously only appeared after expanding the card.
+          const durSecs = trade.duration_seconds || trade.duration || 60;
+          const openAtMs = trade.expires_at - durSecs * 1000;
+          // Times as .tz-time spans (data-ts = unix seconds) so a timezone
+          // change re-renders them via applyTimezone() without a full
+          // re-render of the trades list.
+          const openTimeStr = `<span class="tz-time" data-ts="${Math.round(openAtMs / 1000)}">${formatTimeInTz(new Date(openAtMs))}</span>`;
+          const expiryStr = `<span class="tz-time" data-ts="${Math.round(trade.expires_at / 1000)}">${formatTimeInTz(new Date(trade.expires_at))}</span>`;
+          const durStr = `${String(Math.floor(durSecs / 60)).padStart(2,'0')}:${String(durSecs % 60).padStart(2,'0')}`;
+          const payoutPct = trade.asset.payout || 82;
 
           const item = document.createElement('div');
           item.className = 'qx-deal-card active-deal';
@@ -3254,22 +4276,42 @@
                   ${profitText}
                 </span>
               </div>
-              <button type="button" class="btn-deal-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>
-                <span>${sellButtonLabel(trade)}</span>
-                <span>${sellButtonDisabled(trade) ? '' : sellNowVal.toFixed(2) + ' $'}</span>
-              </button>
+              <div class="deal-row-meta">
+                <span class="deal-meta-item">${payoutPct}% payout</span>
+                <span class="deal-meta-item">Open ${openTimeStr}</span>
+                <span class="deal-meta-item">${durStr} · exp ${expiryStr}</span>
+              </div>
+              <div class="deal-actions-row">
+                <button type="button" class="btn-deal-double" data-trade-id="${trade.trade_id}" ${trade.settlementPending ? 'disabled' : ''}>x2 Double up</button>
+                <button type="button" class="btn-deal-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>
+                  <span>${sellButtonLabel(trade)}</span>
+                  <span>${sellButtonDisabled(trade) ? '' : '$' + sellNowVal.toFixed(2)}</span>
+                </button>
+              </div>
             </div>
             <div class="deal-card-details">
               <div class="deal-detail-row"><span>ID:</span><b>${trade.trade_id || trade.id || ''}</b></div>
               <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 82}%</b></div>
               <div class="deal-detail-row"><span>Open Price:</span><b>${trade.open_price}</b></div>
               <div class="deal-detail-row"><span>Current Price:</span><b>${state.currentPrice}</b></div>
+              <div class="deal-detail-row"><span>Open time:</span><b>${openTimeStr}</b></div>
+              <div class="deal-detail-row"><span>Expiry:</span><b>${expiryStr}</b></div>
+              <div class="deal-detail-row"><span>Duration:</span><b>${durStr}</b></div>
             </div>
           `;
 
           item.querySelector('.deal-card-main')?.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-deal-sell')) return;
+            if (e.target.closest('.btn-deal-sell') || e.target.closest('.btn-deal-double')) return;
             item.classList.toggle('expanded');
+          });
+
+          // Desktop Double-up: same behaviour as mobile "x2 Double up" —
+          // re-place the same direction with the same investment.
+          item.querySelector('.btn-deal-double')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            state.investment = trade.investment;
+            if (el.investmentInput) el.investmentInput.value = state.investment;
+            placeTrade(trade.direction);
           });
 
           item.querySelector('.btn-deal-sell')?.addEventListener('click', (e) => {
@@ -3293,12 +4335,15 @@
           const remainingSecs = Math.max(0, Math.ceil((trade.expires_at - Date.now()) / 1000));
           const m = Math.floor(remainingSecs / 60);
           const s = remainingSecs % 60;
-          const timerLabel = timerLabelFor(trade, `00:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
+          // One timer format everywhere (MM:SS), same as desktop —
+          // the old mobile format was 00:MM:SS (HH:MM:SS).
+          const mobileTimerStr = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+          const timerLabel = timerLabelFor(trade, mobileTimerStr);
           const isWin = (trade.direction === 'up' && state.currentPrice > trade.open_price) ||
                         (trade.direction === 'down' && state.currentPrice < trade.open_price);
           const sellNowVal = calculateEarlySellValue(trade, state.currentPrice);
           const profitAmt = liveProfitAmount(trade, isWin);
-          const profitText = (profitAmt >= 0 ? '+' : '-') + Math.abs(profitAmt).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' $';
+          const profitText = (profitAmt >= 0 ? '+$' : '-$') + Math.abs(profitAmt).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 
           const mobCard = document.createElement('div');
           mobCard.className = 'mobile-deal-card';
@@ -3322,7 +4367,7 @@
             </div>
             <div class="mob-deal-actions">
               <button type="button" class="btn-mob-double" data-trade-id="${trade.trade_id}" ${trade.settlementPending ? 'disabled' : ''}>x2 Double up</button>
-              <button type="button" class="btn-mob-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>${sellButtonDisabled(trade) ? sellButtonLabel(trade) : 'Sell now ' + sellNowVal + ' $'}</button>
+              <button type="button" class="btn-mob-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>${sellButtonDisabled(trade) ? sellButtonLabel(trade) : 'Sell now $' + sellNowVal.toFixed(2)}</button>
             </div>
           `;
 
@@ -3349,11 +4394,11 @@
 
     state.activeTrades.forEach(trade => {
       const remainingSecs = Math.max(0, Math.ceil((trade.expires_at - Date.now()) / 1000));
-      const compactTimerLabel = timerLabelFor(trade, remainingSecs >= 3600
-          ? `${String(Math.floor(remainingSecs / 3600)).padStart(2, '0')}:${String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`
-          : `${String(Math.floor(remainingSecs / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`);
-      const fullTimerLabel = timerLabelFor(trade,
-        `${String(Math.floor(remainingSecs / 3600)).padStart(2, '0')}:${String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`);
+      const compactTimerLabel = timerLabelFor(trade,
+        `${String(Math.floor(remainingSecs / 60)).padStart(2,'0')}:${String(remainingSecs % 60).padStart(2,'0')}`);
+      // One timer format everywhere (MM:SS) — mobile used to show
+      // HH:MM:SS (00:MM:SS) for the same trade.
+      const fullTimerLabel = compactTimerLabel;
 
       const isWin = (trade.direction === 'up' && state.currentPrice > trade.open_price) ||
                     (trade.direction === 'down' && state.currentPrice < trade.open_price);
@@ -3382,7 +4427,7 @@
         const sellButton = card.querySelector('.btn-deal-sell');
         if (sellButton && !sellButtonDisabled(trade)) {
           const amountEl = sellButton.querySelector('span:last-child');
-          if (amountEl) amountEl.textContent = sellNowVal.toFixed(2) + ' $';
+          if (amountEl) amountEl.textContent = '$' + sellNowVal.toFixed(2);
         }
 
         const currentPriceEl = card.querySelector('.deal-detail-row:nth-child(4) b');
@@ -3410,7 +4455,7 @@
 
         const sellButton = card.querySelector('.btn-mob-sell');
         if (sellButton && !sellButtonDisabled(trade)) {
-          sellButton.textContent = 'Sell now ' + sellNowVal + ' $';
+          sellButton.textContent = 'Sell now $' + sellNowVal.toFixed(2);
         }
       });
     });
@@ -3426,11 +4471,22 @@
     const isDraw = resultData.result === 'draw' || resultData.result === 'tie';
     // A draw is neither a win nor a loss: no coloured left border.
     item.className = `qx-deal-card closed-deal ${won ? 'deal-win' : (isDraw ? '' : 'deal-loss')}`;
-    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const diff = won ? '+7' : '-6';
-    const uuid = 'c9b7aacb-' + Math.random().toString(36).substring(2, 6) + '-435a';
-    const durSec = trade.duration_seconds || 5;
-    const durStr = `00:00:${String(durSec).padStart(2, '0')}`;
+    // Close time in the selected timezone (was a UTC ISO string), with a
+    // data-ts so a later timezone change re-renders it via applyTimezone().
+    const closeTs = Math.round(Date.now() / 1000);
+    const nowStr = `<span class="tz-datetime" data-ts="${closeTs}">${formatDateTimeInTz(new Date())}</span>`;
+    // Real difference in pips (close - open), not a hardcoded +7/-6.
+    const closeP = parseFloat(resultData.close_price ?? state.currentPrice);
+    const openP = parseFloat(trade.open_price) || 0;
+    const pipSize = Math.pow(10, -pricePrecision(openP, trade.asset?.symbol));
+    const diffPips = (closeP || openP) ? Math.round((closeP - openP) / pipSize) : 0;
+    const diffStr = (diffPips > 0 ? '+' : '') + diffPips;
+    const durSec = trade.duration_seconds || trade.duration || 5;
+    // One timer format everywhere (MM:SS) — was 00:00:SS (HH:MM:SS).
+    const durStr = `${String(Math.floor(durSec / 60)).padStart(2, '0')}:${String(durSec % 60).padStart(2, '0')}`;
+    const openAtMs = Date.now() - durSec * 1000;
+    const openTimeStr = `<span class="tz-time" data-ts="${Math.round(openAtMs / 1000)}">${formatTimeInTz(new Date(openAtMs))}</span>`;
+    const payoutPct = trade.asset.payout || 82;
 
     item.innerHTML = `
       <div class="deal-card-main">
@@ -3451,16 +4507,21 @@
             ${settlementProfitText(resultData, trade)}
           </span>
         </div>
+        <div class="deal-row-meta">
+          <span class="deal-meta-item">${payoutPct}% payout</span>
+          <span class="deal-meta-item">Open ${openTimeStr}</span>
+          <span class="deal-meta-item">${durStr}</span>
+        </div>
       </div>
       <div class="deal-card-details">
-        <div class="deal-detail-row"><span>ID:</span><b>${uuid}</b></div>
+        <div class="deal-detail-row"><span>ID:</span><b>${trade.trade_id || trade.id || ''}</b></div>
         <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 82}%</b></div>
         <div class="deal-detail-row"><span>Open Price:</span><b>${trade.open_price}</b></div>
         <div class="deal-detail-row"><span>Close Price:</span><b>${resultData.close_price ?? state.currentPrice}</b></div>
-        <div class="deal-detail-row"><span>Open time:</span><b>${nowStr}</b></div>
+        <div class="deal-detail-row"><span>Open time:</span><b>${openTimeStr}</b></div>
         <div class="deal-detail-row"><span>Close time:</span><b>${nowStr}</b></div>
         <div class="deal-detail-row"><span>Duration:</span><b>${durStr}</b></div>
-        <div class="deal-detail-row"><span>Difference:</span><b class="${won ? 'text-green' : 'text-red'}">${diff}</b></div>
+        <div class="deal-detail-row"><span>Difference:</span><b class="${won ? 'text-green' : 'text-red'}">${diffStr}</b></div>
       </div>
     `;
 
@@ -3468,7 +4529,16 @@
       item.classList.toggle('expanded');
     });
 
-    el.tradeList.prepend(item);
+    // Newly settled trades belong under today's date banner when one
+    // is already rendered; otherwise they go to the top of the list.
+    const _d = new Date();
+    const _todayKey = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
+    const _firstBanner = el.tradeList.querySelector('.trades-date-group');
+    if (_firstBanner && _firstBanner.dataset.date === _todayKey) {
+      _firstBanner.after(item);
+    } else {
+      el.tradeList.prepend(item);
+    }
 
     const historyCountEl = document.getElementById('history-trades-count');
     if (historyCountEl) {
@@ -3478,58 +4548,120 @@
     updateDateBanner();
   }
 
-  window.toggleSidebarMenu = function() {
-    const menu = document.getElementById('sidebar-popup-menu');
-    if (menu) {
-      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-    }
-  };
+  // (Team H: the duplicate toggleSidebarMenu that used to live here was
+  // removed — the single definition below wins. 'flex' is correct:
+  // .qx-more-drawer is a flex column.)
 
 
   // --- Trades Tab Navigation (Active vs History) ---
+  // The tabs are real buttons in the trades panel header
+  // (.trades-tab[data-tab="active"|"history"]). Switching a tab
+  // switches the panel content: open trades vs closed/history trades.
+  function switchTradesTab(target) {
+    if (target === 'history' && state.settings.hideResults) {
+      showToast('Trade results are hidden', 'Turn off "Hide trade results" in Settings to see your history.', 'info');
+      return;
+    }
+    document.querySelectorAll('.trades-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === target));
+    if (target === 'active') {
+      if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'block';
+      // Closed trades live in #trade-list (el.tradeList). The old code
+      // targeted #closed-trades-container, which does not exist (null)
+      // and would throw on a tab click.
+      if (el.tradeList) el.tradeList.style.display = 'none';
+    } else {
+      if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'none';
+      if (el.tradeList) el.tradeList.style.display = 'block';
+    }
+  }
+  window.switchTradesTab = switchTradesTab;
   document.querySelectorAll('.trades-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      const target = tab.dataset.tab;
-      if (target === 'history' && state.settings.hideResults) {
-        showToast('Trade results are hidden', 'Turn off "Hide trade results" in Settings to see your history.', 'info');
-        return;
-      }
-      document.querySelectorAll('.trades-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      if (target === 'active') {
-        if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'block';
-        // Closed trades live in #trade-list (el.tradeList). The old code
-        // targeted #closed-trades-container, which does not exist (null)
-        // and would throw on a tab click.
-        if (el.tradeList) el.tradeList.style.display = 'none';
-      } else {
-        if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'none';
-        if (el.tradeList) el.tradeList.style.display = 'block';
-      }
-    });
+    tab.addEventListener('click', () => switchTradesTab(tab.dataset.tab));
+  });
+  // The header clock icon and the "Trades" title are shortcuts to the
+  // same tabs (the clock icon used to be a dead button).
+  document.getElementById('btn-toggle-history')?.addEventListener('click', () => switchTradesTab('history'));
+  document.getElementById('trades-title-btn')?.addEventListener('click', () => switchTradesTab('active'));
+
+  // --- Pair Information modal (Team C, P1) ---
+  // The floating PAIR INFORMATION button was dead. It now opens a modal
+  // with real stats for the selected asset from
+  // /trade/price-data?stats=1 (OtcPriceEngine::assetStats): sentiment and
+  // 5-min / 60-min / 1-day price change from real candle closes.
+  function setPairInfoChange(elm, value) {
+    if (!elm) return;
+    if (typeof value !== 'number') {
+      elm.textContent = '—';
+      elm.classList.remove('positive', 'negative');
+      return;
+    }
+    elm.textContent = (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+    elm.classList.toggle('positive', value >= 0);
+    elm.classList.toggle('negative', value < 0);
+  }
+
+  function openPairInfoModal() {
+    const modal = document.getElementById('pair-info-modal');
+    if (!modal || !state.selectedAsset) return;
+    const setText = (id, txt) => { const n = document.getElementById(id); if (n) n.textContent = txt; };
+    setText('pair-info-symbol', state.selectedAsset.symbol || '—');
+    const body = document.getElementById('pair-info-body');
+    if (body) body.innerHTML = '<p class="trade-confirm-text">Loading…</p>';
+    const sent = document.getElementById('pair-info-sentiment');
+    const changes = document.getElementById('pair-info-changes');
+    const err = document.getElementById('pair-info-error');
+    if (sent) sent.style.display = 'none';
+    if (changes) changes.style.display = 'none';
+    if (err) err.style.display = 'none';
+    modal.style.display = 'flex';
+    fetch(`/trade/price-data?stats=1&asset_id=${encodeURIComponent(state.selectedAsset.id)}`)
+      .then(r => r.json())
+      .then(stats => {
+        if (body) body.innerHTML = '';
+        const buy = typeof stats.sentiment_buy_pct === 'number' ? stats.sentiment_buy_pct : null;
+        const sell = typeof stats.sentiment_sell_pct === 'number' ? stats.sentiment_sell_pct : null;
+        if (sent && buy !== null && sell !== null) {
+          setText('pair-info-sentiment-val', `${buy}% Buy / ${sell}% Sell`);
+          const buyBar = document.getElementById('pair-info-sentiment-buy');
+          const sellBar = document.getElementById('pair-info-sentiment-sell');
+          if (buyBar) buyBar.style.width = `${buy}%`;
+          if (sellBar) sellBar.style.width = `${sell}%`;
+          sent.style.display = 'block';
+        }
+        if (changes) {
+          setPairInfoChange(document.getElementById('pair-info-change-5m'), stats.change_5m_pct);
+          setPairInfoChange(document.getElementById('pair-info-change-60m'), stats.change_60m_pct);
+          setPairInfoChange(document.getElementById('pair-info-change-24h'), stats.change_24h_pct);
+          setText('pair-info-payout', (typeof stats.payout_1m_pct === 'number' ? stats.payout_1m_pct : state.selectedAsset.payout) + '%');
+          changes.style.display = 'block';
+        }
+      })
+      .catch(() => {
+        if (body) body.innerHTML = '';
+        if (err) err.style.display = 'block';
+      });
+  }
+
+  window.closePairInfoModal = function () {
+    const modal = document.getElementById('pair-info-modal');
+    if (modal) modal.style.display = 'none';
+  };
+
+  document.getElementById('btn-pair-info')?.addEventListener('click', openPairInfoModal);
+  document.getElementById('pair-info-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'pair-info-modal') window.closePairInfoModal();
   });
 
   // --- Account Switcher & Refill Demo ---
-  document.querySelectorAll('.account-option').forEach(opt => {
-    opt.addEventListener('click', (e) => {
-      if (e.target.closest('#btn-refill-demo')) return;
-      const type = opt.dataset.type;
-      const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
-
-      fetch('/trade/switch-account', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
-        body: JSON.stringify({ account_type: type }),
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (el.balanceDisplay) el.balanceDisplay.textContent = '$' + parseFloat(data.balance).toFixed(2);
-          if (el.accountTypeLabel) el.accountTypeLabel.textContent = `${type.toUpperCase()} ACCOUNT`;
-          document.querySelectorAll('.account-option').forEach(o => o.classList.toggle('active', o.dataset.type === type));
-          el.accountDropdown?.classList.remove('open');
-          showToast('Account Switched', `Now trading on ${type.toUpperCase()} balance`, 'info');
-        });
-    });
+  // NOTE: the old dead account-switch option handler was deleted (Team C,
+  // P1) — its target elements do not exist anywhere in the blade.
+  // Account switching lives on the `.acc-item-box` onclick handlers
+  // (switchAccountType in layouts/platform.blade.php, page reload).
+  // Balance hide/show (trade-page eye button in the account popover).
+  document.getElementById('btn-hide-balance')?.addEventListener('click', () => {
+    state.settings.hideBalance = !state.settings.hideBalance;
+    saveSettings();
+    applyBalanceVisibility();
   });
 
   document.getElementById('btn-refill-demo')?.addEventListener('click', (e) => {
@@ -3539,22 +4671,30 @@
     }
   });
 
-  // --- Chart Type Toggle (Candles vs Area) ---
-  document.getElementById('btn-chart-candles')?.addEventListener('click', () => {
-    document.getElementById('btn-chart-candles').classList.add('active');
-    document.getElementById('btn-chart-area').classList.remove('active');
-    state.chartType = 'candles';
+  // --- Chart Type Switcher (Candles / Area / Line / Bars / Heiken Ashi) ---
+  // The old #btn-chart-candles / #btn-chart-area buttons do not exist in
+  // the blade, so the previous handlers for them were dead. The live
+  // switcher is the #btn-chart-type-toggle button, which opens the
+  // #chart-type-popover (see below); these two handlers are kept so the
+  // same IDs work if those buttons are ever added back.
+  function setChartType(type) {
+    if (!CHART_TYPES.includes(type)) return;
+    state.chartType = type;
+    try { localStorage.setItem(CHART_TYPE_STORAGE_KEY, type); } catch (e) {}
+    document.querySelectorAll('.ct-grid-btn').forEach(b => b.classList.toggle('active', b.dataset.chartType === type));
+    document.getElementById('btn-chart-candles')?.classList.toggle('active', type === 'candles');
+    document.getElementById('btn-chart-area')?.classList.toggle('active', type === 'area');
+    const popover = document.getElementById('chart-type-popover');
+    if (popover) popover.style.display = 'none';
     createSeries();
     updateSeriesData();
-  });
+    showToast('Chart Type', `Switched to ${CHART_TYPE_LABELS[type] || type}`, 'info');
+  }
+  window.setChartType = setChartType; // usable from blade onclick too
 
-  document.getElementById('btn-chart-area')?.addEventListener('click', () => {
-    document.getElementById('btn-chart-area').classList.add('active');
-    document.getElementById('btn-chart-candles').classList.remove('active');
-    state.chartType = 'area';
-    createSeries();
-    updateSeriesData();
-  });
+  document.getElementById('btn-chart-candles')?.addEventListener('click', () => setChartType('candles'));
+
+  document.getElementById('btn-chart-area')?.addEventListener('click', () => setChartType('area'));
 
   // --- Quotex Candle Timeframes Map ---
   const TF_MAP = {
@@ -3599,18 +4739,62 @@
 
   document.getElementById('chk-ind-sma')?.addEventListener('change', (e) => {
     state.indicators.sma = e.target.checked;
+    saveIndicators();
     updateIndicators();
   });
   document.getElementById('chk-ind-ema')?.addEventListener('change', (e) => {
     state.indicators.ema = e.target.checked;
+    saveIndicators();
     updateIndicators();
   });
   document.getElementById('chk-ind-bollinger')?.addEventListener('change', (e) => {
     state.indicators.bollinger = e.target.checked;
+    saveIndicators();
     updateIndicators();
   });
   document.getElementById('chk-ind-rsi')?.addEventListener('change', (e) => {
     state.indicators.rsi = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-macd')?.addEventListener('change', (e) => {
+    state.indicators.macd = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-stochastic')?.addEventListener('change', (e) => {
+    state.indicators.stochastic = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-cci')?.addEventListener('change', (e) => {
+    state.indicators.cci = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-adx')?.addEventListener('change', (e) => {
+    state.indicators.adx = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-atr')?.addEventListener('change', (e) => {
+    state.indicators.atr = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-williams')?.addEventListener('change', (e) => {
+    state.indicators.williams = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-momentum')?.addEventListener('change', (e) => {
+    state.indicators.momentum = e.target.checked;
+    saveIndicators();
+    updateIndicators();
+  });
+  document.getElementById('chk-ind-roc')?.addEventListener('change', (e) => {
+    state.indicators.roc = e.target.checked;
+    saveIndicators();
     updateIndicators();
   });
 
@@ -3643,6 +4827,44 @@
     if (ab) ab.textContent = '+';
   });
 
+  // --- Favourites (Team C, P1) ---
+  // The ☆ column and the ★ badge with its hardcoded "0" were dead. Stars
+  // now toggle per asset, persist in localStorage, and the badge shows
+  // the real count; clicking the badge filters the list to favourites.
+  const FAVORITE_ASSETS_KEY = 'qx-favorite-assets.v1';
+  let favoriteAssetIds = new Set();
+  let showFavouritesOnly = false;
+
+  function loadFavouriteAssets() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FAVORITE_ASSETS_KEY) || '[]');
+      favoriteAssetIds = new Set((Array.isArray(saved) ? saved : []).map(Number).filter(Boolean));
+    } catch (e) {
+      favoriteAssetIds = new Set();
+    }
+  }
+
+  function saveFavouriteAssets() {
+    try { localStorage.setItem(FAVORITE_ASSETS_KEY, JSON.stringify(Array.from(favoriteAssetIds))); } catch (e) {}
+  }
+
+  function renderFavourites() {
+    document.querySelectorAll('.qx-row-fav').forEach(btn => {
+      const id = Number(btn.dataset.favId || 0);
+      const faved = id > 0 && favoriteAssetIds.has(id);
+      btn.textContent = faved ? '★' : '☆';
+      btn.classList.toggle('faved', faved);
+      btn.title = faved ? 'Remove from favourites' : 'Add to favourites';
+    });
+    const countEl = document.getElementById('fav-count');
+    if (countEl) countEl.textContent = String(favoriteAssetIds.size);
+    const badge = document.getElementById('btn-fav-filter');
+    if (badge) {
+      badge.classList.toggle('active', showFavouritesOnly);
+      badge.setAttribute('aria-pressed', showFavouritesOnly ? 'true' : 'false');
+    }
+  }
+
   // Category Filtering in Asset Drawer
   function filterAssetRows() {
     const activeCatBtn = document.querySelector('.cat-btn.active');
@@ -3659,7 +4881,9 @@
       if (q) {
         searchMatch = item.dataset.symbol.toLowerCase().includes(q) || item.dataset.name.toLowerCase().includes(q);
       }
-      item.style.display = (catMatch && searchMatch) ? 'flex' : 'none';
+      let favMatch = true;
+      if (showFavouritesOnly) favMatch = favoriteAssetIds.has(Number(item.dataset.id || 0));
+      item.style.display = (catMatch && searchMatch && favMatch) ? 'flex' : 'none';
     });
   }
 
@@ -3688,6 +4912,30 @@
       });
     });
   });
+
+  // Favourite stars (stopPropagation: the row itself selects the asset).
+  document.querySelectorAll('.qx-row-fav').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const id = Number(btn.dataset.favId || 0);
+      if (!id) return;
+      if (favoriteAssetIds.has(id)) favoriteAssetIds.delete(id);
+      else favoriteAssetIds.add(id);
+      saveFavouriteAssets();
+      renderFavourites();
+      filterAssetRows();
+    });
+  });
+
+  document.getElementById('btn-fav-filter')?.addEventListener('click', () => {
+    showFavouritesOnly = !showFavouritesOnly;
+    renderFavourites();
+    filterAssetRows();
+  });
+
+  loadFavouriteAssets();
+  renderFavourites();
 
   // Signals Drawer
   document.getElementById('btn-nav-signals')?.addEventListener('click', () => {
@@ -3727,13 +4975,6 @@
   });
   document.getElementById('btn-close-settings')?.addEventListener('click', () => {
     el.settingsModal?.classList.remove('open');
-  });
-
-  document.getElementById('chk-sound')?.addEventListener('change', (e) => {
-    soundContext.enabled = e.target.checked;
-    state.settings.sound = e.target.checked;
-    saveSettings();
-    applySoundButton();
   });
 
   // Close modals on outside click
@@ -3905,11 +5146,33 @@
 
   setInterval(updateCandleCountdown, 250);
 
-  document.getElementById('btn-chart-type-toggle')?.addEventListener('click', () => {
-    state.chartType = state.chartType === 'candles' ? 'area' : 'candles';
-    createSeries();
-    updateSeriesData();
-    showToast('Chart Type', `Switched to ${state.chartType}`, 'info');
+  // Chart-type button opens the type picker popover (Candles / Area /
+  // Line / Bars / Heiken Ashi) instead of just toggling candles↔area.
+  document.getElementById('btn-chart-type-toggle')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const popover = document.getElementById('chart-type-popover');
+    if (!popover) return;
+    // Close the timeframe popover so the two never overlap.
+    const tfPopover = document.getElementById('quotex-timeframe-popover');
+    if (tfPopover) tfPopover.style.display = 'none';
+    popover.style.display = popover.style.display === 'block' ? 'none' : 'block';
+  });
+
+  document.querySelectorAll('.ct-grid-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setChartType(btn.dataset.chartType);
+    });
+  });
+
+  // Click anywhere else closes the chart-type popover.
+  document.addEventListener('click', (e) => {
+    const popover = document.getElementById('chart-type-popover');
+    if (popover && popover.style.display === 'block') {
+      if (!e.target.closest('#chart-type-popover') && !e.target.closest('#btn-chart-type-toggle')) {
+        popover.style.display = 'none';
+      }
+    }
   });
 
   document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
@@ -3941,10 +5204,16 @@
   });
 
   // --- Global Window Helpers for More, Settings, and Account Popover ---
+  // Single definition of toggleSidebarMenu (Team H dedupe — the older
+  // 'block' copy was removed; 'flex' is correct: .qx-more-drawer is a
+  // flex column).
   window.toggleSidebarMenu = function() {
     const drawer = document.getElementById('sidebar-popup-menu');
     if (drawer) {
       drawer.style.display = drawer.style.display === 'none' ? 'flex' : 'none';
+      // Mobile (<=860px): the sidebar-bottom utility strip is pinned to
+      // the foot of the open menu — visible only while the menu is open.
+      document.body.classList.toggle('qx-mobile-menu-open', drawer.style.display !== 'none');
     }
   };
 
@@ -4148,7 +5417,7 @@
     const inp = document.getElementById('input-new-demo-val');
     const newBal = parseFloat(inp?.value || '10000');
     if (isNaN(newBal) || newBal < 0) {
-      alert('Please enter a valid balance amount');
+      window.showAppAlert('Invalid amount', 'Please enter a valid balance amount.');
       return;
     }
     const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
@@ -4204,6 +5473,8 @@
         if (balLbl) balLbl.textContent = '$' + bal.toFixed(2);
         if (ddDemo) ddDemo.textContent = '$' + bal.toFixed(2);
         if (inp) inp.value = bal;
+        // Re-mask if the eye button currently hides the balance.
+        applyBalanceVisibility();
         showToast('Demo Refilled', `Demo account reset to $${bal.toFixed(2)}`, 'win');
       })
       .catch((err) => {
@@ -4367,29 +5638,101 @@
     }
   };
 
+  // Read state is persisted in localStorage per notification id
+  // (key qx.notifRead.v1, shared with the platform header bell, whose
+  // items carry the same tx-<id> ids). The badge / header count /
+  // tab badges always show real unread counts derived from the items
+  // actually rendered — never a hardcoded number.
+  const NOTIF_READ_KEY = 'qx.notifRead.v1';
+  function getReadNotifIds() {
+    try {
+      const raw = localStorage.getItem(NOTIF_READ_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (e) { return new Set(); }
+  }
+  function saveReadNotifIds(set) {
+    try { localStorage.setItem(NOTIF_READ_KEY, JSON.stringify([...set])); } catch (e) {}
+  }
+  // Apply persisted read state and recompute every count from the DOM.
+  function syncNotificationsReadState() {
+    const pop = document.getElementById('notifications-popover');
+    if (!pop) return;
+    const read = getReadNotifIds();
+    let unreadTotal = 0;
+    const unreadByTab = { deposit: 0, withdrawal: 0, tournament: 0 };
+    pop.querySelectorAll('.notif-item[data-notif-id]').forEach(item => {
+      const id = item.getAttribute('data-notif-id');
+      if (read.has(id)) item.classList.remove('unread');
+      if (item.classList.contains('unread')) {
+        unreadTotal++;
+        const tab = notifTabForType(item.getAttribute('data-type'));
+        if (tab && unreadByTab[tab] !== undefined) unreadByTab[tab]++;
+      }
+    });
+    const badge = document.getElementById('bell-count-badge');
+    if (badge) {
+      badge.textContent = unreadTotal;
+      badge.style.display = unreadTotal > 0 ? '' : 'none';
+    }
+    const headerCount = pop.querySelector('.notif-header-count');
+    if (headerCount) headerCount.textContent = unreadTotal;
+    pop.querySelectorAll('.notif-tab').forEach(t => {
+      const tabBadge = t.querySelector('.notif-tab-badge');
+      if (!tabBadge) return;
+      const tab = t.getAttribute('data-tab');
+      if (tab === 'all') tabBadge.textContent = unreadTotal;
+      else if (unreadByTab[tab] !== undefined) tabBadge.textContent = unreadByTab[tab];
+    });
+  }
+  window.syncNotificationsReadState = syncNotificationsReadState;
+
+  // Which bell tab a notification type belongs to. Tournament entries
+  // have their own tab (they used to be mislabelled as withdrawals and
+  // hidden under both tabs, whose filter only matched
+  // deposit/withdrawal). Real promo-bonus transactions (type "bonus")
+  // sit under Deposits — a bonus is credited on a deposit.
+  function notifTabForType(type) {
+    if (type === 'deposit' || type === 'bonus') return 'deposit';
+    if (type === 'withdrawal') return 'withdrawal';
+    if (type === 'tournament_entry') return 'tournament';
+    return null;
+  }
+  const NOTIF_TAB_TYPES = {
+    all: null,
+    deposit: ['deposit', 'bonus'],
+    withdrawal: ['withdrawal'],
+    tournament: ['tournament_entry'],
+  };
+
   window.filterNotifications = function(type, el) {
-    const tabs = document.querySelectorAll('.notif-tab');
+    const pop = document.getElementById('notifications-popover');
+    const tabs = pop ? pop.querySelectorAll('.notif-tab') : document.querySelectorAll('.notif-tab');
     tabs.forEach(t => t.classList.remove('active'));
     if (el) el.classList.add('active');
 
-    const items = document.querySelectorAll('.notif-item');
+    const items = pop ? pop.querySelectorAll('.notif-item') : document.querySelectorAll('.notif-item');
+    const allowed = NOTIF_TAB_TYPES[type];
     items.forEach(item => {
       const itemType = item.getAttribute('data-type');
-      if (type === 'all' || itemType === type) {
-        item.style.display = 'flex';
-      } else {
-        item.style.display = 'none';
-      }
+      // Items with no data-type (e.g. the "no transactions yet"
+      // empty state) always stay visible.
+      const show = !allowed || !itemType || allowed.includes(itemType);
+      item.style.display = show ? 'flex' : 'none';
     });
   };
 
   window.markAllNotificationsRead = function() {
-    const items = document.querySelectorAll('.notif-item.unread');
-    items.forEach(i => i.classList.remove('unread'));
-    const badge = document.getElementById('bell-count-badge');
-    if (badge) badge.style.display = 'none';
-    const headerCount = document.querySelector('.notif-header-count');
-    if (headerCount) headerCount.textContent = '0';
+    const pop = document.getElementById('notifications-popover');
+    const items = pop ? pop.querySelectorAll('.notif-item[data-notif-id]') : document.querySelectorAll('.notif-item[data-notif-id]');
+    const read = getReadNotifIds();
+    items.forEach(i => {
+      const id = i.getAttribute('data-notif-id');
+      if (id) read.add(id);
+      i.classList.remove('unread');
+    });
+    saveReadNotifIds(read);
+    syncNotificationsReadState();
   };
 
   switcherBtn?.addEventListener('click', (e) => {
@@ -4425,6 +5768,8 @@
     const hamburgerBtn = document.getElementById('btn-hamburger');
     if (drawer && !drawer.contains(e.target) && (!moreBtn || !moreBtn.contains(e.target)) && (!hamburgerBtn || !hamburgerBtn.contains(e.target))) {
       drawer.style.display = 'none';
+      // Keep the mobile sidebar-bottom strip in sync (Team H).
+      document.body.classList.remove('qx-mobile-menu-open');
     }
 
     const sp = document.getElementById('settings-sidepanel');
@@ -4455,7 +5800,23 @@
       document.body.appendChild(notifPopover);
     }
 
+    // Apply persisted bell read state so the badge shows the real
+    // unread count from the first paint.
+    if (typeof window.syncNotificationsReadState === 'function') {
+      window.syncNotificationsReadState();
+    }
+    // Show the stored daily limit (if any) in the account popover.
+    if (typeof window.applyDailyLimitNote === 'function') {
+      window.applyDailyLimitNote();
+    }
+
     init();
+
+    // The trades panel starts on the Active tab: only open trades
+    // are shown until the user switches to History.
+    if (typeof window.switchTradesTab === 'function') {
+      window.switchTradesTab('active');
+    }
   }
 
   if (document.readyState === 'loading') {

@@ -320,7 +320,7 @@
                 {{ ($user->account_type ?? 'demo') === 'live' ? 'LIVE ACCOUNT' : 'DEMO ACCOUNT' }}
               </div>
               <div class="usermenu__info-balance">
-                ${{ number_format(($user->account_type ?? 'demo') === 'live' ? ($user->live_balance ?? 0) : ($user->demo_balance ?? 3897.26), 2) }}
+                ${{ number_format($user->getBalance(), 2) }}
               </div>
             </div>
             <span class="usermenu-arrow" id="usermenu-arrow">▼</span>
@@ -335,14 +335,32 @@
                     <div class="usermenu__standard-badge">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="#00c853"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                       <span class="meta-level">STANDARD:</span>
-                      <span class="meta-profit">+0% profit</span>
+                      @php
+                        // Real today's signed P/L from the user's settled
+                        // trades (same source as the trade page) — the
+                        // old "+0% profit" was hardcoded and never
+                        // recomputed. Falls back to no figure if the
+                        // query fails, rather than inventing one.
+                        $platformTodayProfit = null;
+                        try {
+                          $platformTodayProfit = 0.0;
+                          foreach (\App\Models\Trade::where('user_id', $user->id)->whereIn('result', ['win', 'loss'])->where(function ($q) {
+                            $q->whereDate('closed_at', now()->toDateString())->orWhereDate('created_at', now()->toDateString());
+                          })->get() as $pt) {
+                            $platformTodayProfit += \App\Services\TradeResultService::settledProfit($pt);
+                          }
+                        } catch (\Throwable $e) { $platformTodayProfit = null; }
+                      @endphp
+                      @if($platformTodayProfit !== null)
+                        <span class="meta-profit">Today: {{ $platformTodayProfit >= 0 ? '+' : '−' }}${{ number_format(abs($platformTodayProfit), 2) }}</span>
+                      @endif
                     </div>
                     <button type="button" class="btn-eye-toggle" title="Hide/Show Balance" onclick="toggleBalanceVisibility()">
                       <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                     </button>
                   </div>
                   <div class="usermenu__email-row">{{ $user->email }}</div>
-                  <div class="usermenu__id-row">ID: {{ $user->id ? (93090570 + $user->id) : '93090578' }}</div>
+                  <div class="usermenu__id-row">ID: {{ $user->id }}</div>
                   <div class="usermenu__curr-row">
                     <span>Currency:</span>
                     <b>USD</b>
@@ -367,7 +385,7 @@
                       <span class="qx-radio-dot"></span>
                       <span class="qx-acc-name">Demo Account</span>
                     </label>
-                    <div class="qx-acc-balance">${{ number_format($user->demo_balance ?? 3897.26, 2) }}</div>
+                    <div class="qx-acc-balance">${{ number_format($user->demo_balance, 2) }}</div>
                   </div>
                 </div>
               </div>
@@ -399,14 +417,17 @@
           $pNotifTxs = (isset($user) && $user)
             ? \App\Models\Transaction::where('user_id', $user->id)->latest()->limit(8)->get()
             : collect();
-          $pNotifDep = $pNotifTxs->where('type', 'deposit')->count();
+          $pNotifDep = $pNotifTxs->whereIn('type', ['deposit', 'bonus'])->count();
           $pNotifWdl = $pNotifTxs->where('type', 'withdrawal')->count();
-          // +1 = the always-present 50% Welcome Bonus announcement below.
-          $pNotifTotal = $pNotifTxs->count() + 1;
+          $pNotifTourn = $pNotifTxs->where('type', 'tournament_entry')->count();
+          // Real count of the user's actual transactions — the old
+          // code added a hardcoded +1 for an always-present fake
+          // 50% Welcome Bonus card, which has been removed.
+          $pNotifTotal = $pNotifTxs->count();
         @endphp
         <button type="button" class="btn-platform-bell" id="btn-platform-bell" onclick="togglePlatformNotifications(event)" title="Notifications">
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-          <span class="bell-count" id="platform-bell-count">{{ $pNotifTotal }}</span>
+          <span class="bell-count" id="platform-bell-count" style="{{ $pNotifTotal > 0 ? '' : 'display:none;' }}">{{ $pNotifTotal }}</span>
         </button>
 
         <!-- Notifications Popover Backdrop -->
@@ -428,12 +449,17 @@
 
           <!-- Filter Tabs -->
           <div class="notif-tabs">
-            <button type="button" class="notif-tab active" data-tab="all" onclick="filterPlatformNotifications('all', this)">All</button>
+            <button type="button" class="notif-tab active" data-tab="all" onclick="filterPlatformNotifications('all', this)">
+              All <span class="notif-tab-badge">{{ $pNotifTotal }}</span>
+            </button>
             <button type="button" class="notif-tab" data-tab="deposit" onclick="filterPlatformNotifications('deposit', this)">
-              Deposits <span class="notif-tab-badge">{{ $pNotifDep + 1 }}</span>
+              Deposits <span class="notif-tab-badge">{{ $pNotifDep }}</span>
             </button>
             <button type="button" class="notif-tab" data-tab="withdrawal" onclick="filterPlatformNotifications('withdrawal', this)">
               Withdrawals <span class="notif-tab-badge">{{ $pNotifWdl }}</span>
+            </button>
+            <button type="button" class="notif-tab" data-tab="tournament" onclick="filterPlatformNotifications('tournament', this)">
+              Tournaments <span class="notif-tab-badge">{{ $pNotifTourn }}</span>
             </button>
           </div>
 
@@ -441,13 +467,61 @@
           <div class="notif-list" id="platform-notif-list">
             @foreach($pNotifTxs as $tx)
               @php
+                // Tournament entries are their own kind: never labelled
+                // as withdrawals. Bonus and market-purchase transactions
+                // are their own kinds too.
+                $pIsTourn = ($tx->type === 'tournament_entry');
+                $pIsBonus = ($tx->type === 'bonus');
+                $pIsMarket = ($tx->type === 'market_purchase');
                 $pIsDep = ($tx->type === 'deposit');
                 $pIsSuccess = in_array(strtolower($tx->status), ['completed', 'approved', 'success']);
                 $pIsPending = in_array(strtolower($tx->status), ['pending', 'processing', 'in_review']);
+                if ($pIsTourn) {
+                  $pNotifTitle = 'Tournament Entry';
+                  $pNotifLink = route('tournaments');
+                  $pNotifLinkText = 'View Tournaments →';
+                  $pNotifDesc = $tx->notes ?: 'Tournament entry fee paid from your Live balance.';
+                  $pNotifSign = '-';
+                  $pNotifMethod = 'Tournament';
+                } elseif ($pIsBonus) {
+                  $pNotifTitle = 'Bonus Credited';
+                  $pNotifLink = route('deposit');
+                  $pNotifLinkText = 'View Details →';
+                  $pNotifDesc = $tx->notes ?: 'Promo bonus credited to your account.';
+                  $pNotifSign = '+';
+                  $pNotifMethod = $tx->method ?? 'Promo bonus';
+                } elseif ($pIsMarket) {
+                  $pNotifTitle = 'Market Purchase';
+                  $pNotifLink = route('market');
+                  $pNotifLinkText = 'View Details →';
+                  $pNotifDesc = $tx->notes ?: 'Promo code purchased from the Market.';
+                  $pNotifSign = '-';
+                  $pNotifMethod = $tx->method ?? 'Market';
+                } elseif ($pIsDep) {
+                  $pNotifTitle = $pIsSuccess ? 'Deposit Successful' : 'Deposit ' . ucfirst($tx->status);
+                  $pNotifLink = route('deposit');
+                  $pNotifLinkText = 'View Details →';
+                  $pNotifDesc = 'Funds credited to Live balance.';
+                  $pNotifSign = '+';
+                  $pNotifMethod = $tx->method ?? 'USDT';
+                } else {
+                  $pNotifTitle = $pIsSuccess ? 'Withdrawal Processed' : 'Withdrawal ' . ucfirst($tx->status);
+                  $pNotifLink = route('withdrawal');
+                  $pNotifLinkText = 'View Details →';
+                  $pNotifDesc = 'Withdrawal payout processed to destination.';
+                  $pNotifSign = '-';
+                  $pNotifMethod = $tx->method ?? 'USDT';
+                }
               @endphp
-              <div class="notif-item unread notif-type-{{ $tx->type }}" data-type="{{ $tx->type }}">
-                <div class="notif-icon-col {{ $pIsDep ? 'notif-icon-deposit' : 'notif-icon-withdrawal' }}">
-                  @if($pIsDep)
+              <div class="notif-item unread notif-type-{{ $tx->type }}" data-type="{{ $tx->type }}" data-notif-id="tx-{{ $tx->id }}">
+                <div class="notif-icon-col {{ $pIsTourn ? 'notif-icon-tournament' : ($pIsBonus ? 'notif-icon-bonus' : ($pIsMarket ? 'notif-icon-bonus' : ($pIsDep ? 'notif-icon-deposit' : 'notif-icon-withdrawal'))) }}">
+                  @if($pIsTourn)
+                    <span class="tournament-emoji">🏆</span>
+                  @elseif($pIsBonus)
+                    <span class="bonus-emoji">🎁</span>
+                  @elseif($pIsMarket)
+                    <span class="bonus-emoji">🛒</span>
+                  @elseif($pIsDep)
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
                   @else
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#026FD3" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 20V4m0 0l-5 5m5-5l5 5"/></svg>
@@ -455,25 +529,25 @@
                 </div>
                 <div class="notif-content-col">
                   <div class="notif-title-row">
-                    <span class="notif-title {{ $pIsDep ? 'text-deposit' : 'text-withdrawal' }}">
-                      {{ $pIsDep ? ($pIsSuccess ? 'Deposit Successful' : 'Deposit ' . ucfirst($tx->status)) : ($pIsSuccess ? 'Withdrawal Processed' : 'Withdrawal ' . ucfirst($tx->status)) }}
+                    <span class="notif-title {{ $pIsTourn ? 'text-tournament' : ($pIsBonus ? 'text-bonus' : ($pIsDep ? 'text-deposit' : 'text-withdrawal')) }}">
+                      {{ $pNotifTitle }}
                     </span>
                     <span class="notif-badge-status {{ $pIsSuccess ? 'status-success' : ($pIsPending ? 'status-pending' : 'status-danger') }}">
                       {{ ucfirst($tx->status) }}
                     </span>
                   </div>
                   <div class="notif-amount-row">
-                    <span class="notif-amount {{ $pIsDep ? 'text-deposit' : 'text-withdrawal' }}">
-                      {{ $pIsDep ? '+' : '-' }}${{ number_format($tx->amount, 2) }}
+                    <span class="notif-amount {{ $pIsTourn ? 'text-tournament' : ($pIsBonus ? 'text-bonus' : ($pIsDep ? 'text-deposit' : 'text-withdrawal')) }}">
+                      {{ $pNotifSign }}${{ number_format($tx->amount, 2) }}
                     </span>
-                    <span class="notif-method">{{ $tx->method ?? 'USDT' }}</span>
+                    <span class="notif-method">{{ $pNotifMethod }}</span>
                   </div>
                   <p class="notif-desc">
-                    {{ $pIsDep ? 'Funds credited to Live balance.' : 'Withdrawal payout processed to destination.' }}
+                    {{ $pNotifDesc }}
                   </p>
                   <div class="notif-meta-row">
                     <span class="notif-time">{{ $tx->created_at ? $tx->created_at->diffForHumans() : 'Recently' }}</span>
-                    <a href="{{ $pIsDep ? route('deposit') : route('withdrawal') }}" class="notif-action-link">View Details →</a>
+                    <a href="{{ $pNotifLink }}" class="notif-action-link">{{ $pNotifLinkText }}</a>
                   </div>
                 </div>
               </div>
@@ -496,26 +570,6 @@
               </div>
             @endif
 
-            <!-- 50% Deposit Bonus Notification -->
-            <div class="notif-item notif-type-deposit" data-type="deposit">
-              <div class="notif-icon-col notif-icon-bonus">
-                <span class="bonus-emoji">🚀</span>
-              </div>
-              <div class="notif-content-col">
-                <div class="notif-title-row">
-                  <span class="notif-title text-bonus">50% Welcome Bonus</span>
-                  <span class="notif-badge-status status-bonus">Active</span>
-                </div>
-                <div class="notif-amount-row">
-                  <span class="notif-amount text-bonus">+$25.00 Bonus</span>
-                  <span class="notif-method">Promo: WELCOME50</span>
-                </div>
-                <p class="notif-desc">50% extra bonus credited to boost your initial trading volume and earnings.</p>
-                <div class="notif-meta-row">
-                  <span class="notif-time">Today, 11:20 AM</span>
-                </div>
-              </div>
-            </div>
           </div>
 
           <!-- Footer with Quick Action Links -->
@@ -673,21 +727,91 @@
       }
     }
 
+    // Read state is persisted in localStorage per notification id
+    // (key qx.notifRead.v1, shared with the trade page bell, whose
+    // items carry the same tx-<id> ids). Counts are recomputed from
+    // the items actually rendered — never hardcoded.
+    var PLATFORM_NOTIF_READ_KEY = 'qx.notifRead.v1';
+    function getReadPlatformNotifIds() {
+      try {
+        var raw = localStorage.getItem(PLATFORM_NOTIF_READ_KEY);
+        var arr = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(arr) ? arr : []);
+      } catch (e) { return new Set(); }
+    }
+    function saveReadPlatformNotifIds(set) {
+      try { localStorage.setItem(PLATFORM_NOTIF_READ_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
+    }
+    function platformNotifTabForType(type) {
+      if (type === 'deposit' || type === 'bonus') return 'deposit';
+      if (type === 'withdrawal') return 'withdrawal';
+      if (type === 'tournament_entry') return 'tournament';
+      return null;
+    }
+    function syncPlatformNotificationsReadState() {
+      var pop = document.getElementById('platform-notifications-popover');
+      if (!pop) return;
+      var read = getReadPlatformNotifIds();
+      var unreadTotal = 0;
+      var unreadByTab = { deposit: 0, withdrawal: 0, tournament: 0 };
+      pop.querySelectorAll('.notif-item[data-notif-id]').forEach(function(item) {
+        var id = item.getAttribute('data-notif-id');
+        if (read.has(id)) item.classList.remove('unread');
+        if (item.classList.contains('unread')) {
+          unreadTotal++;
+          var tab = platformNotifTabForType(item.getAttribute('data-type'));
+          if (tab && unreadByTab[tab] !== undefined) unreadByTab[tab]++;
+        }
+      });
+      var badge = document.getElementById('platform-bell-count');
+      if (badge) {
+        badge.textContent = unreadTotal;
+        badge.style.display = unreadTotal > 0 ? '' : 'none';
+      }
+      var headerCount = pop.querySelector('.notif-header-count');
+      if (headerCount) headerCount.textContent = unreadTotal;
+      pop.querySelectorAll('.notif-tab').forEach(function(t) {
+        var tabBadge = t.querySelector('.notif-tab-badge');
+        if (!tabBadge) return;
+        var tab = t.getAttribute('data-tab');
+        if (tab === 'all') tabBadge.textContent = unreadTotal;
+        else if (unreadByTab[tab] !== undefined) tabBadge.textContent = unreadByTab[tab];
+      });
+    }
+
+    // Which types each bell tab shows. Tournament entries have their
+    // own tab (they used to be mislabelled as withdrawals and hidden
+    // under both tabs). Real promo-bonus transactions (type "bonus")
+    // sit under Deposits; market purchases show under All only.
+    var PLATFORM_NOTIF_TAB_TYPES = {
+      all: null,
+      deposit: ['deposit', 'bonus'],
+      withdrawal: ['withdrawal'],
+      tournament: ['tournament_entry']
+    };
+
     function filterPlatformNotifications(type, el) {
       document.querySelectorAll('#platform-notifications-popover .notif-tab').forEach(t => t.classList.remove('active'));
       if (el) el.classList.add('active');
+      var allowed = PLATFORM_NOTIF_TAB_TYPES[type];
       document.querySelectorAll('#platform-notifications-popover .notif-item').forEach(item => {
-        const itemType = item.getAttribute('data-type');
-        item.style.display = (type === 'all' || itemType === type) ? 'flex' : 'none';
+        var itemType = item.getAttribute('data-type');
+        // Items with no data-type (e.g. the "no transactions yet"
+        // empty state) always stay visible.
+        var show = !allowed || !itemType || allowed.indexOf(itemType) !== -1;
+        item.style.display = show ? 'flex' : 'none';
       });
     }
 
     function markAllPlatformNotificationsRead() {
-      document.querySelectorAll('#platform-notifications-popover .notif-item.unread').forEach(i => i.classList.remove('unread'));
-      const badge = document.getElementById('platform-bell-count');
-      if (badge) badge.style.display = 'none';
-      const headerCount = document.querySelector('#platform-notifications-popover .notif-header-count');
-      if (headerCount) headerCount.textContent = '0';
+      var read = getReadPlatformNotifIds();
+      document.querySelectorAll('#platform-notifications-popover .notif-item[data-notif-id]').forEach(i => {
+        var id = i.getAttribute('data-notif-id');
+        if (id) read.add(id);
+        i.classList.remove('unread');
+      });
+      saveReadPlatformNotifIds(read);
+      syncPlatformNotificationsReadState();
     }
 
     // Close the platform notifications popover on any click outside it / the bell
@@ -705,6 +829,9 @@
       const pop = document.getElementById('platform-notifications-popover');
       if (bdrop && bdrop.parentElement !== document.body) document.body.appendChild(bdrop);
       if (pop && pop.parentElement !== document.body) document.body.appendChild(pop);
+      // Apply persisted bell read state so the badge shows the real
+      // unread count from the first paint.
+      syncPlatformNotificationsReadState();
     })();
   </script>
   @stack('scripts')

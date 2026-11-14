@@ -38,8 +38,12 @@ class LGPayController extends Controller
             ->firstOrFail();
 
         $amount = round((float) $request->input('amount'), 2);
-        if ($amount < (float) $method->min_amount || $amount > (float) $method->max_amount) {
-            return back()->withErrors(['amount' => 'Amount is outside the allowed limit for this method.']);
+        $minAmount = $method->effectiveMinAmount();
+        if ($amount < $minAmount) {
+            return back()->withErrors(['amount' => 'The minimum deposit for ' . $method->name . ' is $' . number_format($minAmount, 2) . '. Please enter at least $' . number_format($minAmount, 2) . '.']);
+        }
+        if ($amount > (float) $method->max_amount) {
+            return back()->withErrors(['amount' => 'The maximum deposit for ' . $method->name . ' is $' . number_format((float) $method->max_amount, 2) . '.']);
         }
 
         $conversionRate = round((float) $method->conversion_rate, 4);

@@ -639,8 +639,8 @@ class OtcPriceEngine
      * payout_1m_pct / payout_5m_pct are BOTH the stored
      * admin-configured payout: there is no per-expiry payout in the
      * DB, and the old 5-min value (stored payout minus a crc32-derived
-     * 0-4) was fiction. change_5m_pct / change_24h_pct come from
-     * actual candle closes (see changePercent()).
+     * 0-4) was fiction. change_5m_pct / change_60m_pct /
+     * change_24h_pct come from actual candle closes (see changePercent()).
      */
     public static function assetStats(Asset $asset, ?int $now = null, ?array $tradeVolumes = null): array
     {
@@ -654,6 +654,7 @@ class OtcPriceEngine
             'payout_1m_pct' => $payout,
             'payout_5m_pct' => $payout,
             'change_5m_pct' => self::changePercent($asset, 300, $now),
+            'change_60m_pct' => self::changePercent($asset, 3600, $now),
             'change_24h_pct' => self::changePercent($asset, 86400, $now),
             'sentiment_buy_pct' => $sentiment['buy_pct'],
             'sentiment_sell_pct' => $sentiment['sell_pct'],

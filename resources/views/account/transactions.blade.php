@@ -130,6 +130,61 @@
   background: rgba(255, 82, 82, 0.15);
   color: #ff5252;
 }
+.tx-filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.tx-filters select,
+.tx-filters input[type="date"],
+.tx-filters input[type="text"] {
+  background: #2b3040;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+.tx-filters select:focus,
+.tx-filters input:focus {
+  border-color: #026fd3;
+}
+.tx-filters input[type="text"] {
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+.tx-filters button {
+  background: #026fd3;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tx-filters button:hover {
+  background: #1d82e2;
+}
+.tx-filters .tx-clear {
+  color: #8b95a5;
+  font-size: 13px;
+  text-decoration: none;
+}
+.tx-filters .tx-clear:hover {
+  text-decoration: underline;
+}
+.tx-fee-note {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: #ffab00;
+  margin-top: 3px;
+  white-space: normal;
+}
 .tx-empty {
   padding: 32px 16px;
   text-align: center;
@@ -177,6 +232,32 @@
     <a href="{{ route('history') }}">Trade history</a>
   </div>
 
+  {{-- Filters: type / status / date range / search (GET, kept across
+       pagination via withQueryString). --}}
+  @php $f = $filters ?? ['type' => '', 'status' => '', 'from' => '', 'to' => '', 'q' => '']; @endphp
+  <form method="GET" action="{{ route('transactions.index') }}" class="tx-filters">
+    <select name="type" aria-label="Filter by type">
+      <option value="">All types</option>
+      <option value="deposit" {{ ($f['type'] ?? '') === 'deposit' ? 'selected' : '' }}>Deposit</option>
+      <option value="withdrawal" {{ ($f['type'] ?? '') === 'withdrawal' ? 'selected' : '' }}>Withdrawal</option>
+      <option value="bonus" {{ ($f['type'] ?? '') === 'bonus' ? 'selected' : '' }}>Promo bonus</option>
+      <option value="tournament_entry" {{ ($f['type'] ?? '') === 'tournament_entry' ? 'selected' : '' }}>Tournament entry</option>
+    </select>
+    <select name="status" aria-label="Filter by status">
+      <option value="">All statuses</option>
+      @foreach(['pending' => 'Pending', 'processing' => 'Processing', 'approved' => 'Approved', 'rejected' => 'Rejected', 'failed' => 'Failed'] as $value => $label)
+        <option value="{{ $value }}" {{ ($f['status'] ?? '') === $value ? 'selected' : '' }}>{{ $label }}</option>
+      @endforeach
+    </select>
+    <input type="date" name="from" value="{{ $f['from'] ?? '' }}" aria-label="From date">
+    <input type="date" name="to" value="{{ $f['to'] ?? '' }}" aria-label="To date">
+    <input type="text" name="q" value="{{ $f['q'] ?? '' }}" placeholder="Search method, notes or reference…" aria-label="Search transactions">
+    <button type="submit">Filter</button>
+    @if(!empty($f['type']) || !empty($f['status']) || !empty($f['from']) || !empty($f['to']) || !empty($f['q']))
+      <a class="tx-clear" href="{{ route('transactions.index') }}">Clear</a>
+    @endif
+  </form>
+
   <div class="tx-card">
     @php
       // Money-in types show with a + sign, money-out types with a − sign.
@@ -186,6 +267,7 @@
         'withdrawal' => 'Withdrawal',
         'bonus' => 'Promo bonus',
         'tournament_entry' => 'Tournament entry',
+        'market_purchase' => 'Market purchase',
       ];
     @endphp
 
@@ -230,7 +312,11 @@
                 @endif
               </td>
               <td><span class="tx-status {{ $statusKey }}">{{ $statusLabel }}</span></td>
-              <td class="tx-amount {{ $isIn ? 'in' : 'out' }}">{{ $isIn ? '+' : '−' }}${{ number_format((float) $tx->amount, 2) }}</td>
+              <td class="tx-amount {{ $isIn ? 'in' : 'out' }}">{{ $isIn ? '+' : '−' }}${{ number_format((float) $tx->amount, 2) }}
+                @if(!empty($tx->fee_amount) && (float) $tx->fee_amount > 0)
+                  <span class="tx-fee-note">Fee ${{ number_format((float) $tx->fee_amount, 2) }} · You receive ${{ number_format((float) ($tx->net_amount ?? ((float) $tx->amount - (float) $tx->fee_amount)), 2) }}</span>
+                @endif
+              </td>
             </tr>
           @endforeach
         </tbody>
@@ -238,7 +324,7 @@
     @else
       <div class="tx-empty">
         You don't have any transactions yet.<br>
-        Deposits, withdrawals, promo bonuses and tournament entries will appear here.
+        Deposits, withdrawals, promo bonuses, tournament entries and Market purchases will appear here.
       </div>
     @endif
   </div>

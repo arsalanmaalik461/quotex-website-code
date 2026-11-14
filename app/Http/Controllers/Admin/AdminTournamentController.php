@@ -57,11 +57,11 @@ class AdminTournamentController extends Controller
                 'sort_order'         => 1,
                 'description'        => 'Total prize pool is $7500. To participate you need to register and pay the entrance fee, after that $100 will be deposited to a special tournament account. Initial conditions in the tournament are the same for all participants. During one day, participants need to make trades on the tournament account. And 5 traders with the biggest tournament balance will become winners.',
                 'prize_distribution' => [
-                    ['place' => '1 Place', 'prize' => '2300$'],
-                    ['place' => '2 Place', 'prize' => '1800$'],
-                    ['place' => '3 Place', 'prize' => '1500$'],
-                    ['place' => '4 Place', 'prize' => '1200$'],
-                    ['place' => '5 Place', 'prize' => '700$'],
+                    ['place' => '1 Place', 'prize' => '3000$'],
+                    ['place' => '2 Place', 'prize' => '2000$'],
+                    ['place' => '3 Place', 'prize' => '1000$'],
+                    ['place' => '4 Place', 'prize' => '900$'],
+                    ['place' => '5 Place', 'prize' => '600$'],
                 ],
             ]);
 
@@ -113,29 +113,10 @@ class AdminTournamentController extends Controller
                 ],
             ]);
 
-            Tournament::create([
-                'title'              => 'Grand 100K Championship',
-                'prize_pool'         => 100000.00,
-                'entry_fee'          => 50.00,
-                'rebuy_cost'         => 50.00,
-                'number_of_rebuys'   => 200,
-                'duration'           => '30 days',
-                'start_date'         => now()->subDays(30)->setTime(5, 0),
-                'end_date'           => now()->subDay()->setTime(5, 0),
-                'timezone_label'     => 'UTC+05:00',
-                'badge_text'         => 'Completed',
-                'status'             => 'completed',
-                'is_active'          => false,
-                'sort_order'         => 4,
-                'description'        => 'Annual grand championship for professional binary traders with massive $100,000 prize pool distribution.',
-                'prize_distribution' => [
-                    ['place' => '1 Place', 'prize' => '30000$'],
-                    ['place' => '2 Place', 'prize' => '25000$'],
-                    ['place' => '3 Place', 'prize' => '20000$'],
-                    ['place' => '4 Place', 'prize' => '15000$'],
-                    ['place' => '5 Place', 'prize' => '10000$'],
-                ],
-            ]);
+            // NOTE: no "Grand 100K Championship" here — it was an invented
+            // tournament, not a real Quotex tournament, so it was removed
+            // (see migration 2026_11_14_000009, which deletes the row from
+            // databases that were already seeded with it).
         }
     }
 

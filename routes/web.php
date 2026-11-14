@@ -101,6 +101,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/en/market', [AccountController::class, 'market'])->name('market.en');
     Route::post('/market/apply', [AccountController::class, 'applyPromo'])->name('market.apply');
     Route::post('/en/market/apply', [AccountController::class, 'applyPromo'])->name('market.apply.en');
+    Route::post('/market/purchase', [AccountController::class, 'purchasePromo'])->name('market.purchase');
+    Route::post('/en/market/purchase', [AccountController::class, 'purchasePromo'])->name('market.purchase.en');
 
     Route::get('/tournaments', [AccountController::class, 'tournaments'])->name('tournaments');
     Route::get('/en/tournaments', [AccountController::class, 'tournaments'])->name('tournaments.en');

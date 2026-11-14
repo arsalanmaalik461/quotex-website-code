@@ -91,7 +91,7 @@
           <a href="{{ route('tournaments') }}" class="sidebar-btn sidebar-btn-tournaments" id="btn-nav-tournaments" title="Tournaments">
             <div class="sidebar-nav-icon-wrap">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.45 1-1 1H7v4h10v-4h-2c-.55 0-1-.45-1-1v-2.34M18 4H6v7a6 6 0 0 0 12 0V4z"/></svg>
-              <span class="sidebar-nav-badge">3</span>
+              <span class="sidebar-nav-badge">{{ $activeTournamentCount ?? 3 }}</span>
             </div>
             <span class="btn-lbl">TOURNAMENTS</span>
           </a>
@@ -99,7 +99,6 @@
           <button type="button" class="sidebar-btn" id="btn-nav-more" title="More" onclick="toggleSidebarMenu()">
             <div class="sidebar-nav-icon-wrap">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
-              <span class="sidebar-nav-badge">4</span>
             </div>
             <span class="btn-lbl">MORE</span>
           </button>
@@ -150,14 +149,14 @@
             <span class="more-item-chevron">›</span>
           </a>
 
-          <!-- Tournaments Link with Badge 4 -->
+          <!-- Tournaments Link with Badge (same computed active-tournament count as the sidebar badge) -->
           <a class="e2OnI Aez8T more-drawer-item" href="{{ route('tournaments') }}">
             <div class="more-item-left">
               <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.45 1-1 1H7v4h10v-4h-2c-.55 0-1-.45-1-1v-2.34M18 4H6v7a6 6 0 0 0 12 0V4z"/></svg>
               <span class="UMMVb">Tournaments</span>
             </div>
             <div class="more-item-right">
-              <span class="more-badge-blue VixvO SYV91">4</span>
+              <span class="more-badge-blue VixvO SYV91">{{ $activeTournamentCount ?? 3 }}</span>
               <span class="more-item-chevron">›</span>
             </div>
           </a>
@@ -278,11 +277,12 @@
                         <div class="wqiyJ">
                           <svg class="paper-plane-icon" width="16" height="16" viewBox="0 0 24 24" fill="#00c853"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                           <span class="qjGlZ">STANDARD:</span>
-                          <span class="VgpLl">+0% profit</span>
+                          @php $todayProfitVal = (float) ($todayProfit ?? 0); @endphp
+                          <span class="VgpLl">Today: {{ $todayProfitVal >= 0 ? '+' : '−' }}${{ number_format(abs($todayProfitVal), 2) }}</span>
                         </div>
                       </div>
                       <div class="popover-top-actions">
-                        <button type="button" class="btn-hide-balance-eye" title="Hide/Show Balance">
+                        <button type="button" class="btn-hide-balance-eye" id="btn-hide-balance" title="Hide/Show Balance">
                           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                         </button>
                         <button type="button" class="btn-close-popover" onclick="closeAccountDropdown()" title="Close">✕</button>
@@ -292,14 +292,14 @@
                     <div class="MBy5L acc-user-meta">
                       <div class="AWI3t">
                         <div class="TSVxV user-email-val">{{ $user->email }}</div>
-                        <span class="xHywM user-id-val">ID: {{ $user->id ? (93090570 + $user->id) : '93090578' }}</span>
+                        <span class="xHywM user-id-val">ID: {{ $user->id }}</span>
                       </div>
                     </div>
 
                     <div class="P6HXN acc-curr-row">
                       <span class="aGgsi">Currency:</span>
                       <b class="jNiTn">USD</b>
-                      <button type="button" class="ip2D2 btn-change-curr" onclick="alert('Account currency is set to USD.')">CHANGE</button>
+                      <button type="button" class="ip2D2 btn-change-curr" onclick="showAppAlert('Account currency', 'Account currency is set to USD. Currency change is coming soon.')">CHANGE</button>
                     </div>
                   </li>
 
@@ -316,7 +316,7 @@
                       </div>
                       <b class="YnoT0 acc-balance-val">${{ number_format($user->live_balance, 2) }}</b>
                       <div class="KZUc1 acc-limit-note">The daily limit is not set</div>
-                      <button type="button" class="s3gwg btn-set-limit" onclick="event.stopPropagation(); alert('Daily limit settings');">SET LIMIT</button>
+                      <button type="button" class="s3gwg btn-set-limit" onclick="event.stopPropagation(); openDailyLimitModal();">SET LIMIT</button>
                     </li>
 
                     <!-- Demo Account Item -->
@@ -370,7 +370,17 @@
             <div class="notif-bell-wrap">
               <button type="button" class="btn-header-bell" id="btn-header-bell" onclick="toggleNotifications(event)" title="Notifications">
                 <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-                <span class="bell-count-badge" id="bell-count-badge">4</span>
+                @php
+                  // Real bell counts, computed from the user's actual
+                  // transactions below — never hardcoded. (The JS read
+                  // state in trade.js then narrows these to unread.)
+                  $bellTxs = $recentTransactions ?? (\App\Models\Transaction::where('user_id', $user->id)->latest()->limit(8)->get() ?? collect());
+                  $bellDep = $bellTxs->whereIn('type', ['deposit', 'bonus'])->count();
+                  $bellWdl = $bellTxs->where('type', 'withdrawal')->count();
+                  $bellTourn = $bellTxs->where('type', 'tournament_entry')->count();
+                  $bellTotal = $bellTxs->count();
+                @endphp
+                <span class="bell-count-badge" id="bell-count-badge" style="{{ $bellTotal > 0 ? '' : 'display:none;' }}">{{ $bellTotal }}</span>
               </button>
 
               <!-- Notifications Popover Backdrop -->
@@ -382,7 +392,7 @@
                   <div class="notif-header-title-wrap">
                     <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
                     <span class="notif-header-title">Notifications</span>
-                    <span class="notif-header-count">4</span>
+                    <span class="notif-header-count">{{ $bellTotal }}</span>
                   </div>
                   <div class="notif-header-actions">
                     <button type="button" class="btn-mark-all-read" onclick="markAllNotificationsRead()" title="Mark all as read">Mark as read</button>
@@ -392,31 +402,82 @@
 
                 <!-- Filter Tabs -->
                 <div class="notif-tabs">
-                  <button type="button" class="notif-tab active" data-tab="all" onclick="filterNotifications('all', this)">All</button>
+                  <button type="button" class="notif-tab active" data-tab="all" onclick="filterNotifications('all', this)">
+                    All <span class="notif-tab-badge">{{ $bellTotal }}</span>
+                  </button>
                   <button type="button" class="notif-tab" data-tab="deposit" onclick="filterNotifications('deposit', this)">
-                    Deposits <span class="notif-tab-badge">2</span>
+                    Deposits <span class="notif-tab-badge">{{ $bellDep }}</span>
                   </button>
                   <button type="button" class="notif-tab" data-tab="withdrawal" onclick="filterNotifications('withdrawal', this)">
-                    Withdrawals <span class="notif-tab-badge">2</span>
+                    Withdrawals <span class="notif-tab-badge">{{ $bellWdl }}</span>
+                  </button>
+                  <button type="button" class="notif-tab" data-tab="tournament" onclick="filterNotifications('tournament', this)">
+                    Tournaments <span class="notif-tab-badge">{{ $bellTourn }}</span>
                   </button>
                 </div>
 
                 <!-- Notifications List -->
                 <div class="notif-list" id="notif-list-container">
-                  @php
-                    $txs = $recentTransactions ?? (\App\Models\Transaction::where('user_id', $user->id)->latest()->limit(8)->get() ?? collect());
-                  @endphp
-
-                  @if($txs->isNotEmpty())
-                    @foreach($txs as $tx)
+                  @if($bellTxs->isNotEmpty())
+                    @foreach($bellTxs as $tx)
                       @php
+                        // Tournament entries are their own kind: they must
+                        // NOT be shown as withdrawals ("Withdrawal
+                        // Processed", -$fee, withdrawal link). Bonus
+                        // transactions are their own kind too.
+                        $notifKind = in_array($tx->type, ['deposit', 'withdrawal', 'tournament_entry', 'bonus', 'market_purchase']) ? $tx->type : 'other';
                         $isDep = ($tx->type === 'deposit');
+                        $isTourn = ($tx->type === 'tournament_entry');
+                        $isBonus = ($tx->type === 'bonus');
+                        $isMarket = ($tx->type === 'market_purchase');
                         $isSuccess = in_array(strtolower($tx->status), ['completed', 'approved', 'success']);
                         $isPending = in_array(strtolower($tx->status), ['pending', 'processing', 'in_review']);
+                        if ($isTourn) {
+                          $notifTitle = 'Tournament Entry';
+                          $notifLink = route('tournaments');
+                          $notifLinkText = 'View Tournaments →';
+                          $notifDesc = $tx->notes ?: 'Tournament entry fee paid from your Live balance.';
+                          $notifSign = '-';
+                          $notifMethod = 'Tournament';
+                        } elseif ($isBonus) {
+                          $notifTitle = 'Bonus Credited';
+                          $notifLink = route('deposit');
+                          $notifLinkText = 'View Details →';
+                          $notifDesc = $tx->notes ?: 'Promo bonus credited to your account.';
+                          $notifSign = '+';
+                          $notifMethod = $tx->method ?? 'Promo bonus';
+                        } elseif ($isMarket) {
+                          $notifTitle = 'Market Purchase';
+                          $notifLink = route('market');
+                          $notifLinkText = 'View Details →';
+                          $notifDesc = $tx->notes ?: 'Promo code purchased from the Market.';
+                          $notifSign = '-';
+                          $notifMethod = $tx->method ?? 'Market';
+                        } elseif ($isDep) {
+                          $notifTitle = $isSuccess ? 'Deposit Successful' : 'Deposit ' . ucfirst($tx->status);
+                          $notifLink = route('deposit');
+                          $notifLinkText = 'View Details →';
+                          $notifDesc = 'Funds credited to Live balance.';
+                          $notifSign = '+';
+                          $notifMethod = $tx->method ?? 'USDT';
+                        } else {
+                          $notifTitle = $isSuccess ? 'Withdrawal Processed' : 'Withdrawal ' . ucfirst($tx->status);
+                          $notifLink = route('withdrawal');
+                          $notifLinkText = 'View Details →';
+                          $notifDesc = 'Withdrawal payout processed to destination.';
+                          $notifSign = '-';
+                          $notifMethod = $tx->method ?? 'USDT';
+                        }
                       @endphp
-                      <div class="notif-item unread notif-type-{{ $tx->type }}" data-type="{{ $tx->type }}">
-                        <div class="notif-icon-col {{ $isDep ? 'notif-icon-deposit' : 'notif-icon-withdrawal' }}">
-                          @if($isDep)
+                      <div class="notif-item unread notif-type-{{ $tx->type }}" data-type="{{ $tx->type }}" data-notif-id="tx-{{ $tx->id }}">
+                        <div class="notif-icon-col {{ $isTourn ? 'notif-icon-tournament' : (($isBonus || $isMarket) ? 'notif-icon-bonus' : ($isDep ? 'notif-icon-deposit' : 'notif-icon-withdrawal')) }}">
+                          @if($isTourn)
+                            <span class="tournament-emoji">🏆</span>
+                          @elseif($isBonus)
+                            <span class="bonus-emoji">🎁</span>
+                          @elseif($isMarket)
+                            <span class="bonus-emoji">🛒</span>
+                          @elseif($isDep)
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
                           @else
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#026FD3" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 20V4m0 0l-5 5m5-5l5 5"/></svg>
@@ -424,118 +485,45 @@
                         </div>
                         <div class="notif-content-col">
                           <div class="notif-title-row">
-                            <span class="notif-title {{ $isDep ? 'text-deposit' : 'text-withdrawal' }}">
-                              {{ $isDep ? ($isSuccess ? 'Deposit Successful' : 'Deposit ' . ucfirst($tx->status)) : ($isSuccess ? 'Withdrawal Processed' : 'Withdrawal ' . ucfirst($tx->status)) }}
+                            <span class="notif-title {{ $isTourn ? 'text-tournament' : ($isBonus ? 'text-bonus' : ($isDep ? 'text-deposit' : 'text-withdrawal')) }}">
+                              {{ $notifTitle }}
                             </span>
                             <span class="notif-badge-status {{ $isSuccess ? 'status-success' : ($isPending ? 'status-pending' : 'status-danger') }}">
                               {{ ucfirst($tx->status) }}
                             </span>
                           </div>
                           <div class="notif-amount-row">
-                            <span class="notif-amount {{ $isDep ? 'text-deposit' : 'text-withdrawal' }}">
-                              {{ $isDep ? '+' : '-' }}${{ number_format($tx->amount, 2) }}
+                            <span class="notif-amount {{ $isTourn ? 'text-tournament' : ($isBonus ? 'text-bonus' : ($isDep ? 'text-deposit' : 'text-withdrawal')) }}">
+                              {{ $notifSign }}${{ number_format($tx->amount, 2) }}
                             </span>
-                            <span class="notif-method">{{ $tx->method ?? 'USDT' }}</span>
+                            <span class="notif-method">{{ $notifMethod }}</span>
                           </div>
                           <p class="notif-desc">
-                            {{ $isDep ? 'Funds credited to Live balance.' : 'Withdrawal payout processed to destination.' }}
+                            {{ $notifDesc }}
                           </p>
                           <div class="notif-meta-row">
                             <span class="notif-time">{{ $tx->created_at ? $tx->created_at->diffForHumans() : 'Recently' }}</span>
-                            <a href="{{ $isDep ? route('deposit') : route('withdrawal') }}" class="notif-action-link">View Details →</a>
+                            <a href="{{ $notifLink }}" class="notif-action-link">{{ $notifLinkText }}</a>
                           </div>
                         </div>
                       </div>
                     @endforeach
+                  @else
+                    <div class="notif-item notif-type-deposit">
+                      <div class="notif-icon-col notif-icon-deposit">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
+                      </div>
+                      <div class="notif-content-col">
+                        <div class="notif-title-row">
+                          <span class="notif-title text-deposit">No transactions yet</span>
+                        </div>
+                        <p class="notif-desc">Your deposits and withdrawals will appear here.</p>
+                        <div class="notif-meta-row">
+                          <a href="{{ route('deposit') }}" class="notif-action-link">Make a Deposit →</a>
+                        </div>
+                      </div>
+                    </div>
                   @endif
-
-                  <!-- Default Standard Deposit & Withdrawal Notifications -->
-                  <!-- 1. Deposit Successful Notification -->
-                  <div class="notif-item unread notif-type-deposit" data-type="deposit">
-                    <div class="notif-icon-col notif-icon-deposit">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00d17a" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m0 0l-5-5m5 5l5-5"/></svg>
-                    </div>
-                    <div class="notif-content-col">
-                      <div class="notif-title-row">
-                        <span class="notif-title text-deposit">Deposit Successful</span>
-                        <span class="notif-badge-status status-success">Completed</span>
-                      </div>
-                      <div class="notif-amount-row">
-                        <span class="notif-amount text-deposit">+$50.00</span>
-                        <span class="notif-method">USDT (TRC20)</span>
-                      </div>
-                      <p class="notif-desc">Your payment has been verified and deposited into your Live Trading account.</p>
-                      <div class="notif-meta-row">
-                        <span class="notif-time">15 min ago</span>
-                        <a href="{{ route('deposit') }}" class="notif-action-link">Deposit More →</a>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 2. Withdrawal Processed Notification -->
-                  <div class="notif-item unread notif-type-withdrawal" data-type="withdrawal">
-                    <div class="notif-icon-col notif-icon-withdrawal">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#026FD3" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 20V4m0 0l-5 5m5-5l5 5"/></svg>
-                    </div>
-                    <div class="notif-content-col">
-                      <div class="notif-title-row">
-                        <span class="notif-title text-withdrawal">Withdrawal Processed</span>
-                        <span class="notif-badge-status status-success">Success</span>
-                      </div>
-                      <div class="notif-amount-row">
-                        <span class="notif-amount text-withdrawal">-$100.00</span>
-                        <span class="notif-method">TRC-20 Wallet</span>
-                      </div>
-                      <p class="notif-desc">Your withdrawal request has been approved and sent to your blockchain address.</p>
-                      <div class="notif-meta-row">
-                        <span class="notif-time">2 hours ago</span>
-                        <a href="{{ route('withdrawal') }}" class="notif-action-link">View Details →</a>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 3. 50% Deposit Bonus Notification -->
-                  <div class="notif-item notif-type-deposit" data-type="deposit">
-                    <div class="notif-icon-col notif-icon-bonus">
-                      <span class="bonus-emoji">🚀</span>
-                    </div>
-                    <div class="notif-content-col">
-                      <div class="notif-title-row">
-                        <span class="notif-title text-bonus">50% Welcome Bonus</span>
-                        <span class="notif-badge-status status-bonus">Active</span>
-                      </div>
-                      <div class="notif-amount-row">
-                        <span class="notif-amount text-bonus">+$25.00 Bonus</span>
-                        <span class="notif-method">Promo: WELCOME50</span>
-                      </div>
-                      <p class="notif-desc">50% extra bonus credited to boost your initial trading volume and earnings.</p>
-                      <div class="notif-meta-row">
-                        <span class="notif-time">Today, 11:20 AM</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 4. Withdrawal In Review Notification -->
-                  <div class="notif-item notif-type-withdrawal" data-type="withdrawal">
-                    <div class="notif-icon-col notif-icon-pending">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    </div>
-                    <div class="notif-content-col">
-                      <div class="notif-title-row">
-                        <span class="notif-title text-pending">Withdrawal Request</span>
-                        <span class="notif-badge-status status-pending">In Review</span>
-                      </div>
-                      <div class="notif-amount-row">
-                        <span class="notif-amount text-pending">-$50.00</span>
-                        <span class="notif-method">Binance Pay</span>
-                      </div>
-                      <p class="notif-desc">Your withdrawal request was received and is undergoing automated risk review.</p>
-                      <div class="notif-meta-row">
-                        <span class="notif-time">Yesterday</span>
-                        <a href="{{ route('withdrawal') }}" class="notif-action-link">Check Status →</a>
-                      </div>
-                    </div>
-                  </div>
                 </div>
 
                 <!-- Footer with Quick Action Links -->
@@ -645,7 +633,7 @@
           <div class="floating-clock-box">
             <span class="live-dot-green"></span>
             <span class="clock-time-val" id="live-clock">21:22:34</span>
-            <span class="clock-tz-val">UTC+5</span>
+            <span class="clock-tz-val" id="clock-tz-label"></span>
           </div>
 
           <!-- Floating Pair Information Capsule -->
@@ -658,8 +646,11 @@
         <!-- Floating Green Trade Opened Toasts (stacked, one per placed trade — real Quotex) -->
         <div id="chart-trade-toasts" class="chart-trade-toasts"></div>
 
-        <!-- Giant Faint Background Watermark DEMO -->
+        <!-- Giant Faint Background Watermark DEMO — demo account only,
+             never on a live account (Team H). -->
+        @if(($user->account_type ?? 'demo') !== 'live')
         <div class="chart-demo-watermark">DEMO</div>
+        @endif
 
         <div id="trade-chart" class="trade-chart-canvas"></div>
         <div id="indicators-legend" class="indicators-legend" style="display:none;"></div>
@@ -678,6 +669,14 @@
             <label class="indicator-option"><span>EMA (20)</span><input type="checkbox" id="chk-ind-ema"></label>
             <label class="indicator-option"><span>Bollinger Bands</span><input type="checkbox" id="chk-ind-bollinger"></label>
             <label class="indicator-option"><span>RSI (14)</span><input type="checkbox" id="chk-ind-rsi"></label>
+            <label class="indicator-option"><span>MACD (12, 26, 9)</span><input type="checkbox" id="chk-ind-macd"></label>
+            <label class="indicator-option"><span>Stochastic (14, 3, 3)</span><input type="checkbox" id="chk-ind-stochastic"></label>
+            <label class="indicator-option"><span>CCI (20)</span><input type="checkbox" id="chk-ind-cci"></label>
+            <label class="indicator-option"><span>ADX (14)</span><input type="checkbox" id="chk-ind-adx"></label>
+            <label class="indicator-option"><span>ATR (14)</span><input type="checkbox" id="chk-ind-atr"></label>
+            <label class="indicator-option"><span>Williams %R (14)</span><input type="checkbox" id="chk-ind-williams"></label>
+            <label class="indicator-option"><span>Momentum (10)</span><input type="checkbox" id="chk-ind-momentum"></label>
+            <label class="indicator-option"><span>ROC (10)</span><input type="checkbox" id="chk-ind-roc"></label>
           </div>
           <div class="drawings-hint" id="drawings-hint" style="display:none;"></div>
         </div>
@@ -723,6 +722,17 @@
             <button type="button" class="tf-grid-btn" data-tf="1h">1h</button>
             <button type="button" class="tf-grid-btn" data-tf="4h">4h</button>
             <button type="button" class="tf-grid-btn" data-tf="1d">1d</button>
+          </div>
+        </div>
+
+        <!-- Chart Type Popover (Candles / Area / Line / Bars / Heiken Ashi) -->
+        <div class="quotex-timeframe-popover chart-type-popover" id="chart-type-popover" style="display: none;">
+          <div class="ct-popover-list">
+            <button type="button" class="tf-grid-btn ct-grid-btn active" data-chart-type="candles">Candles</button>
+            <button type="button" class="tf-grid-btn ct-grid-btn" data-chart-type="area">Area</button>
+            <button type="button" class="tf-grid-btn ct-grid-btn" data-chart-type="line">Line</button>
+            <button type="button" class="tf-grid-btn ct-grid-btn" data-chart-type="bar">Bars</button>
+            <button type="button" class="tf-grid-btn ct-grid-btn" data-chart-type="heikenashi">Heiken Ashi</button>
           </div>
         </div>
 
@@ -786,7 +796,7 @@
             </div>
 
             <div class="pending-footer-link">
-              <a href="#" onclick="alert('Pending orders trigger automatically when the asset reaches the specified quote price.')">HOW IT WORKS?</a>
+              <a href="#" onclick="event.preventDefault(); showAppAlert('How it works', 'Pending orders trigger automatically when the asset reaches the specified quote price.')">HOW IT WORKS?</a>
             </div>
           </div>
 
@@ -825,7 +835,7 @@
             </div>
 
             <div class="pending-footer-link">
-              <a href="#" onclick="alert('Pending orders trigger automatically when the specified time is reached.')">HOW IT WORKS?</a>
+              <a href="#" onclick="event.preventDefault(); showAppAlert('How it works', 'Pending orders trigger automatically when the specified time is reached.')">HOW IT WORKS?</a>
             </div>
           </div>
         </div>
@@ -875,16 +885,16 @@
 
         <!-- Investment Fieldset -->
         <fieldset class="control-fieldset">
-          <legend class="fieldset-legend">Investment</legend>
+          <legend class="fieldset-legend" id="invest-mode-label">Investment</legend>
           <div class="control-input-group">
             <button type="button" class="btn-step" id="invest-minus">−</button>
             <div class="control-input-wrap">
               <input type="number" id="investment-input" value="1" min="1" step="1" class="control-input">
-              <span class="currency-suffix" id="invest-suffix">$</span>
+              <span class="currency-suffix" id="invest-prefix">$</span>
             </div>
             <button type="button" class="btn-step" id="invest-plus">+</button>
           </div>
-          <span class="control-switch-label">SWITCH</span>
+          <span class="control-switch-label" id="btn-switch-invest-mode" style="cursor:pointer;" title="Switch between dollar amount and percent of balance">SWITCH $/%</span>
         </fieldset>
       </div>
 
@@ -899,6 +909,11 @@
           <span class="payout-label">Investment</span>
           <span class="payout-dots">...................................................</span>
           <span class="payout-invest-val" id="invest-preview-display">100 $</span>
+        </div>
+        <div class="payout-sum-row">
+          <span class="payout-label">Profit</span>
+          <span class="payout-dots">...................................................</span>
+          <b class="payout-val" id="asset-gain">+0.00 $</b>
         </div>
       </div>
 
@@ -927,26 +942,25 @@
       <!-- Trades Section Header -->
       <div class="panel-trades">
         <div class="trades-nav-header">
-          <div class="trades-nav-title" id="trades-title-btn">
-            <span>Trades</span>
-            <span class="trades-count-pill" id="active-trades-count">{{ count($activeTrades ?? []) }}</span>
+          <div class="trades-tabs" role="tablist" aria-label="Trades">
+            <button type="button" class="trades-tab active" data-tab="active" role="tab" aria-selected="true" id="trades-title-btn">
+              <span>Active</span>
+              <span class="trades-count-pill" id="active-trades-count">{{ count($activeTrades ?? []) }}</span>
+            </button>
+            <button type="button" class="trades-tab" data-tab="history" role="tab" aria-selected="false">
+              <span>History</span>
+              <span class="trades-count-pill" id="history-trades-count">{{ count($recentTrades ?? []) }}</span>
+            </button>
           </div>
           <div class="trades-nav-icons">
             <button type="button" class="btn-trades-icon" id="btn-toggle-history" title="History">
               <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             </button>
-            <span class="trades-count-pill" id="history-trades-count">{{ count($recentTrades ?? []) }}</span>
           </div>
         </div>
 
         <!-- Combined Trades Scroll Container (Exact Image 1) -->
         <div class="trades-scroll-container">
-          <!-- Date Header Banner (Quotex Exact) -->
-          <div class="trades-date-banner" id="trades-date-banner">
-            <span class="date-text" id="trades-date-text">{{ strtoupper(now()->format('j F')) }}</span>
-            <span class="date-count-pill" id="trades-date-count">{{ count($activeTrades ?? []) + count($recentTrades ?? []) }}</span>
-          </div>
-
           <!-- Active Trades Slot -->
           <div class="trades-active-slot" id="active-trades-container">
             <!-- Active deals rendered dynamically here by trade.js -->
@@ -954,17 +968,42 @@
 
           <!-- Closed Trades History Slot -->
           <div class="trades-closed-slot" id="trade-list">
+            @php
+              // Per-trade date grouping (replaces the single "today"
+              // banner): one banner per close-date, newest first.
+              $prevGroupDate = null;
+              $groupCounts = ($recentTrades ?? collect())->groupBy(function ($t) {
+                return ($t->closed_at ?? $t->updated_at ?? $t->created_at)->format('Y-m-d');
+              })->map(function ($g) { return $g->count(); });
+            @endphp
             @forelse($recentTrades as $trade)
+              @php
+                $groupDate = ($trade->closed_at ?? $trade->updated_at ?? $trade->created_at)->format('Y-m-d');
+                $groupLabel = $groupDate === now()->format('Y-m-d')
+                  ? 'TODAY'
+                  : ($groupDate === now()->subDay()->format('Y-m-d')
+                    ? 'YESTERDAY'
+                    : strtoupper(($trade->closed_at ?? $trade->updated_at ?? $trade->created_at)->format('j F')));
+              @endphp
+              @if($groupDate !== $prevGroupDate)
+                <div class="trades-date-banner trades-date-group" data-date="{{ $groupDate }}">
+                  <span class="date-text">{{ $groupLabel }}</span>
+                  <span class="date-count-pill">{{ $groupCounts[$groupDate] ?? 1 }}</span>
+                </div>
+                @php $prevGroupDate = $groupDate; @endphp
+              @endif
               @php
                 $cardProfit = \App\Services\TradeResultService::settledProfit($trade);
                 $cardIsDraw = ($trade->result === 'draw' || $trade->result === 'tie');
-                $cardProfitStr = ($cardProfit > 0 ? '+' : ($cardProfit < 0 ? '-' : '')) . number_format(abs($cardProfit), 2) . ' $';
+                $cardProfitStr = ($cardProfit > 0 ? '+$' : ($cardProfit < 0 ? '-$' : '$')) . number_format(abs($cardProfit), 2);
                 $cardDiffPips = null;
                 if ($trade->close_price !== null && $trade->open_price !== null) {
                     $cardDigits = $trade->asset->digits ?? 5;
                     // Same pip convention as the engine: pip = 10^(-digits).
                     $cardDiffPips = (int) round(($trade->close_price - $trade->open_price) * pow(10, $cardDigits));
                 }
+                $cardDur = (int) ($trade->duration_seconds ?? 5);
+                $cardDurStr = sprintf('%02d:%02d', intdiv($cardDur, 60), $cardDur % 60);
               @endphp
               <div class="qx-deal-card closed-deal {{ $trade->result === 'win' ? 'deal-win' : ($cardIsDraw ? '' : 'deal-loss') }}">
                 <div class="deal-card-main" onclick="this.parentElement.classList.toggle('expanded')">
@@ -974,7 +1013,7 @@
                       <span class="deal-flag">{{ $trade->asset->flag_icon ?? $trade->asset->flag ?? '🌐' }}</span>
                       <span class="deal-sym-name">{{ Str::limit($trade->asset->symbol, 13) }}</span>
                     </div>
-                    <span class="deal-duration-val">00:00:{{ sprintf('%02d', $trade->duration_seconds ?? 5) }}</span>
+                    <span class="deal-duration-val">{{ $cardDurStr }}</span>
                   </div>
                   <div class="deal-row-mid">
                     <div class="deal-invest-dir {{ $trade->result === 'win' ? 'win' : ($cardIsDraw ? '' : 'loss') }}">
@@ -985,15 +1024,20 @@
                       {{ $cardProfitStr }}
                     </span>
                   </div>
+                  <div class="deal-row-meta">
+                    <span class="deal-meta-item">{{ $trade->asset->payout_percent }}% payout</span>
+                    <span class="deal-meta-item">Open {{ $trade->created_at->format('H:i:s') }}</span>
+                    <span class="deal-meta-item">{{ $cardDurStr }}</span>
+                  </div>
                 </div>
                 <div class="deal-card-details">
                   <div class="deal-detail-row"><span>ID:</span><b>{{ $trade->id }}-{{ substr(md5($trade->id), 0, 4) }}</b></div>
                   <div class="deal-detail-row"><span>Trade Pair:</span><b>{{ $trade->asset->symbol }} {{ $trade->asset->payout_percent }}%</b></div>
                   <div class="deal-detail-row"><span>Open Price:</span><b>{{ $trade->open_price }}</b></div>
                   <div class="deal-detail-row"><span>Close Price:</span><b>{{ $trade->close_price ?? $trade->open_price }}</b></div>
-                  <div class="deal-detail-row"><span>Open time:</span><b>{{ $trade->created_at->format('d.m.Y H:i:s') }}</b></div>
-                  <div class="deal-detail-row"><span>Close time:</span><b>{{ $trade->updated_at->format('d.m.Y H:i:s') }}</b></div>
-                  <div class="deal-detail-row"><span>Duration:</span><b>00:00:{{ sprintf('%02d', $trade->duration_seconds ?? 5) }}</b></div>
+                  <div class="deal-detail-row"><span>Open time:</span><b class="tz-datetime" data-ts="{{ $trade->created_at->timestamp }}">{{ $trade->created_at->format('d.m.Y H:i:s') }}</b></div>
+                  <div class="deal-detail-row"><span>Close time:</span><b class="tz-datetime" data-ts="{{ $trade->updated_at->timestamp }}">{{ $trade->updated_at->format('d.m.Y H:i:s') }}</b></div>
+                  <div class="deal-detail-row"><span>Duration:</span><b>{{ $cardDurStr }}</b></div>
                   <div class="deal-detail-row"><span>Difference:</span><b class="{{ $trade->result === 'win' ? 'text-green' : ($cardIsDraw ? '' : 'text-red') }}">{{ $cardDiffPips === null ? '—' : (($cardDiffPips > 0 ? '+' : '') . $cardDiffPips) }}</b></div>
                 </div>
               </div>
@@ -1031,10 +1075,10 @@
 
       <!-- Search Row: Favorite Badge + Search Input -->
       <div class="qx-search-bar-row">
-        <div class="qx-fav-badge-btn" title="Favorites">
+        <button type="button" class="qx-fav-badge-btn" id="btn-fav-filter" title="Show favourites only" aria-pressed="false">
           <span class="star-icon">★</span>
-          <span class="fav-count">0</span>
-        </div>
+          <span class="fav-count" id="fav-count">0</span>
+        </button>
         <div class="asset-search-wrap qx-search-input-wrap">
           <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
           <input type="text" id="asset-search" placeholder="Search">
@@ -1081,7 +1125,7 @@
               @endphp
               data-digits="{{ $itemDigits }}"
              data-cat="{{ $asset->type }}">
-          <div class="qx-row-fav">☆</div>
+          <button type="button" class="qx-row-fav" data-fav-id="{{ $asset->id }}" title="Add to favourites">☆</button>
           <div class="qx-row-identity">
             <span class="item-flag qx-flag">{!! $renderAssetFlags($asset->symbol, $asset->flag, $asset->type) !!}</span>
             <strong class="item-symbol qx-symbol">{{ $asset->symbol }}</strong>
@@ -1724,11 +1768,22 @@
             <div class="input-control__value">English</div>
           </label>
 
-          <!-- Timezone Select -->
+          <!-- Timezone Select: a real control — changing it re-renders
+               the clock and every displayed time on the trade page in
+               the selected zone (see trade.js applyTimezone()). Option
+               labels get their live UTC offset from JS (DST-aware). -->
           <label class="input-control input-control--select input-control--dark" for="timezone-select">
             <span class="input-control__label">Timezone</span>
-            <input class="input-control__input" id="timezone-select" type="hidden" value="18000">
-            <div class="input-control__value">(UTC+05:00)</div>
+            <select class="input-control__input input-control__select" id="timezone-select">
+              <option value="UTC">UTC</option>
+              <option value="Asia/Karachi" selected>Karachi</option>
+              <option value="Europe/London">London</option>
+              <option value="America/New_York">New York</option>
+              <option value="Asia/Dubai">Dubai</option>
+              <option value="Asia/Dhaka">Dhaka</option>
+              <option value="Europe/Berlin">Berlin</option>
+              <option value="Asia/Tokyo">Tokyo</option>
+            </select>
           </label>
 
           <!-- Template Selection -->
@@ -1788,7 +1843,7 @@
             <div class="pI5vA setting-chk-row">
               <label class="QH0iF THkhw">
                 <input type="checkbox" class="MKlND" id="chk-performance-mode" checked>
-                <span>Perfomance Mode</span>
+                <span>Performance Mode</span>
               </label>
               <p class="qv0wV">Use optimized rendering for chart and candles</p>
             </div>
@@ -1807,6 +1862,14 @@
                 <span>Hide trade results</span>
               </label>
               <p class="qv0wV">Use hide trade results mode</p>
+            </div>
+
+            <div class="pI5vA setting-chk-row">
+              <label class="QH0iF THkhw">
+                <input type="checkbox" class="MKlND" id="chk-sound" checked>
+                <span>Sound</span>
+              </label>
+              <p class="qv0wV">Play sounds for trades and alerts</p>
             </div>
           </div>
 
@@ -1853,7 +1916,7 @@
       </div>
 
       <div class="signals-help-link-wrap">
-        <a href="javascript:void(0);" onclick="alert('Trading signals provide real-time recommendations for profitable asset trades based on advanced market indicators and admin analysis.')" class="signals-help-link">WHAT'S IT?</a>
+        <a href="javascript:void(0);" onclick="showAppAlert('Trading signals', 'Trading signals provide real-time recommendations for profitable asset trades based on advanced market indicators and admin analysis.')" class="signals-help-link">WHAT'S IT?</a>
       </div>
 
       <div class="signals-drawer-body">
@@ -1921,6 +1984,67 @@
       <div class="trade-confirm-actions">
         <button type="button" class="trade-confirm-btn cancel" onclick="closeTradeConfirm()">Cancel</button>
         <button type="button" class="trade-confirm-btn ok" onclick="confirmTradePlacement()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic in-app alert modal (Team H — replaces native alert() for
+       CHANGE / HOW IT WORKS? / signals / demo-balance validation). -->
+  <div id="app-alert-modal" class="trade-confirm-backdrop" style="display:none;">
+    <div class="trade-confirm-box">
+      <div class="trade-confirm-title" id="app-alert-title">Notice</div>
+      <p id="app-alert-text" class="trade-confirm-text"></p>
+      <div class="trade-confirm-actions">
+        <button type="button" class="trade-confirm-btn ok" onclick="closeAppAlert()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pair Information modal (opened by the floating PAIR INFORMATION
+       button). Values are real per-asset stats from
+       /trade/price-data?stats=1 (OtcPriceEngine::assetStats): sentiment
+       from recent trades/candles and price change from real candle
+       closes. Filled by trade.js openPairInfoModal(). -->
+  <div id="pair-info-modal" class="trade-confirm-backdrop" style="display:none;">
+    <div class="trade-confirm-box pair-info-box">
+      <div class="trade-confirm-title"><span id="pair-info-symbol">—</span></div>
+      <p class="trade-confirm-text">Pair information</p>
+      <div id="pair-info-body">
+        <p class="trade-confirm-text">Loading…</p>
+      </div>
+      <div id="pair-info-sentiment" style="display:none;">
+        <div class="pair-info-row"><span>Traders sentiment</span><b id="pair-info-sentiment-val">—</b></div>
+        <div class="pair-info-sentiment-bar">
+          <span class="pair-info-sentiment-buy" id="pair-info-sentiment-buy"></span>
+          <span class="pair-info-sentiment-sell" id="pair-info-sentiment-sell"></span>
+        </div>
+        <div class="pair-info-sentiment-labels"><span class="text-green">↑ Buy</span><span class="text-red">↓ Sell</span></div>
+      </div>
+      <div id="pair-info-changes" style="display:none;">
+        <div class="pair-info-row"><span>Price change · 5 min</span><b id="pair-info-change-5m">—</b></div>
+        <div class="pair-info-row"><span>Price change · 60 min</span><b id="pair-info-change-60m">—</b></div>
+        <div class="pair-info-row"><span>Price change · 1 day</span><b id="pair-info-change-24h">—</b></div>
+        <div class="pair-info-row"><span>Payout (1+ min)</span><b id="pair-info-payout">—</b></div>
+      </div>
+      <p class="pair-info-error trade-confirm-text" id="pair-info-error" style="display:none;">Could not load pair data. Try again.</p>
+      <div class="trade-confirm-actions">
+        <button type="button" class="trade-confirm-btn cancel" onclick="closePairInfoModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily Limit Modal (centered in-app modal, same pattern as the trade confirm modal — no native alert()) -->
+  <div id="daily-limit-modal" class="trade-confirm-backdrop" style="display:none;">
+    <div class="trade-confirm-box">
+      <div class="trade-confirm-title">Daily limit</div>
+      <p class="trade-confirm-text">Set a daily trading limit for this account. Leave it empty to remove the limit. This is a reminder shown in your account menu; it does not block trades.</p>
+      <div class="edit-demo-field" style="margin: 0 0 14px;">
+        <span class="edit-demo-label">Daily limit ($)</span>
+        <input type="number" id="daily-limit-input" class="edit-demo-input" placeholder="Enter the amount" min="0" step="any">
+      </div>
+      <div class="trade-confirm-actions">
+        <button type="button" class="trade-confirm-btn cancel" onclick="closeDailyLimitModal()">Cancel</button>
+        <button type="button" class="trade-confirm-btn ok" onclick="saveDailyLimit()">Save</button>
       </div>
     </div>
   </div>

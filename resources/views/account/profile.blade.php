@@ -11,7 +11,7 @@
         <div class="balance__currency">
           <span class="balance__currency-icon">$</span>
           <b>USD</b>
-          <button type="button" class="KtjVk rw1pS GSOMi balance__button" onclick="alert('Currency change is locked to USD for your region.')">
+          <button type="button" class="KtjVk rw1pS GSOMi balance__button" onclick="showProfileAlert('Currency', 'Currency change is locked to USD for your region. More currencies are coming soon.')">
             <span class="oQ4Z4">Change</span>
           </button>
         </div>
@@ -267,7 +267,7 @@
             </label>
           </div>
 
-            <form action="{{ route('profile.delete') }}" method="POST" onsubmit="return confirm('Are you sure you want to delete your account? This cannot be undone.');">
+            <form id="delete-account-form" action="{{ route('profile.delete') }}" method="POST" onsubmit="return confirmDeleteAccount(event);">
               @csrf
               @method('DELETE')
               <button type="submit" class="button--delete">
@@ -282,7 +282,7 @@
         <div class="content-section grow-full">
           <div class="content-section__head">
             Credit / debit card verification:
-            <button type="button" class="KtjVk rw1pS _5qIw profile-page__cards-new" onclick="alert('Card verification will open upon first bank card deposit.')">
+            <button type="button" class="KtjVk rw1pS _5qIw profile-page__cards-new" onclick="showProfileAlert('Card verification', 'Card verification will open upon first bank card deposit.')">
               <span class="oQ4Z4">Add New Card</span>
             </button>
           </div>
@@ -297,6 +297,86 @@
     </div>
   </div>
 </main>
+
+<!-- In-app alert / confirm modal (Team H — replaces native alert()/confirm()). -->
+<style>
+.profile-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.profile-modal-box {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: #171d2b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.profile-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.profile-modal-text {
+  font-size: 13px;
+  color: #8593a8;
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+
+.profile-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.profile-modal-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profile-modal-btn.ok {
+  background: #00c853;
+  color: #000;
+}
+
+.profile-modal-btn.cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.profile-modal-btn.danger {
+  background: #e85b4e;
+  color: #fff;
+}
+</style>
+<div id="profile-modal" class="profile-modal-backdrop" style="display:none;">
+  <div class="profile-modal-box">
+    <div class="profile-modal-title" id="profile-modal-title">Notice</div>
+    <p class="profile-modal-text" id="profile-modal-text"></p>
+    <div class="profile-modal-actions" id="profile-modal-alert-actions">
+      <button type="button" class="profile-modal-btn ok" onclick="closeProfileModal()">OK</button>
+    </div>
+    <div class="profile-modal-actions" id="profile-modal-confirm-actions" style="display:none;">
+      <button type="button" class="profile-modal-btn cancel" onclick="closeProfileModal()">Cancel</button>
+      <button type="button" class="profile-modal-btn danger" onclick="submitDeleteAccount()">Delete account</button>
+    </div>
+  </div>
+</div>
 
 <script>
   function togglePasswordForm() {
@@ -345,6 +425,44 @@
         btn.textContent = 'Try again';
         btn.title = err.message;
       });
+  }
+
+  // Centered in-app alert / confirm modal (Team H) — replaces native
+  // alert()/confirm(). Currency + card are honest "coming soon"
+  // placeholders; delete really submits the form on confirm.
+  function showProfileAlert(title, message) {
+    const modal = document.getElementById('profile-modal');
+    const titleEl = document.getElementById('profile-modal-title');
+    const textEl = document.getElementById('profile-modal-text');
+    if (!modal || !textEl) return;
+    if (titleEl) titleEl.textContent = title || 'Notice';
+    textEl.textContent = message || '';
+    document.getElementById('profile-modal-alert-actions').style.display = 'flex';
+    document.getElementById('profile-modal-confirm-actions').style.display = 'none';
+    modal.style.display = 'flex';
+  }
+
+  function closeProfileModal() {
+    const modal = document.getElementById('profile-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function confirmDeleteAccount(e) {
+    e.preventDefault();
+    const modal = document.getElementById('profile-modal');
+    const titleEl = document.getElementById('profile-modal-title');
+    const textEl = document.getElementById('profile-modal-text');
+    if (!modal || !textEl) return true;
+    if (titleEl) titleEl.textContent = 'Delete your account?';
+    textEl.textContent = 'Are you sure you want to delete your account? This cannot be undone.';
+    document.getElementById('profile-modal-alert-actions').style.display = 'none';
+    document.getElementById('profile-modal-confirm-actions').style.display = 'flex';
+    modal.style.display = 'flex';
+    return false;
+  }
+
+  function submitDeleteAccount() {
+    document.getElementById('delete-account-form').submit();
   }
 </script>
 @endsection

@@ -130,7 +130,22 @@ class TradeController extends Controller
             $todayProfit += TradeResultService::settledProfit($t);
         }
 
-        return view('trade.index', compact('assets', 'selectedAsset', 'user', 'recentTrades', 'activeTrades', 'todayProfit'));
+        // Tournament badge count (sidebar + More drawer): the real number
+        // of active tournaments the user can join right now. Falls back
+        // to 3 only when the tournaments table is missing/empty, because
+        // the tournaments list page shows 3 default cards in that case —
+        // so the badge always matches what the list page actually shows.
+        $activeTournamentCount = 3;
+        try {
+            if (Schema::hasTable('tournaments')) {
+                $dbActiveCount = \App\Models\Tournament::active()->count();
+                if ($dbActiveCount > 0) {
+                    $activeTournamentCount = $dbActiveCount;
+                }
+            }
+        } catch (\Throwable $e) {}
+
+        return view('trade.index', compact('assets', 'selectedAsset', 'user', 'recentTrades', 'activeTrades', 'todayProfit', 'activeTournamentCount'));
     }
 
     public function placeTrade(Request $request)

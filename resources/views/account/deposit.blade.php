@@ -644,7 +644,7 @@ body {
                     $currency = $isOnline ? 'PKR' : $method->currency;
                     $description = $isOnline ? 'Online auto payment.' : $method->description;
                   @endphp
-                  {!! renderMethodCard($method->name, 'Min. $' . number_format($method->min_amount, 2), $method->icon ?: $method->provider_code ?: 'card', $method->min_amount, $currency, $method->conversion_rate, $methods, $method->id, $isOnline ? null : $method->wallet_address, $description, $isOnline ? 'lgpay' : 'manual', $method->max_amount, $method->logo_url, $category->id > 0 ? $category->id : null) !!}
+                  {!! renderMethodCard($method->name, 'Min. $' . number_format($method->effective_min_amount, 2), $method->icon ?: $method->provider_code ?: 'card', $method->effective_min_amount, $currency, $method->conversion_rate, $methods, $method->id, $isOnline ? null : $method->wallet_address, $description, $isOnline ? 'lgpay' : 'manual', $method->max_amount, $method->logo_url, $category->id > 0 ? $category->id : null) !!}
                 @endforeach
               </div>
             </div>
@@ -734,6 +734,7 @@ body {
           <input type="number" id="deposit-amount-input" name="amount" class="field-input-qx" style="padding-left:26px; font-size:16px; font-weight:700;" value="100" min="5" step="1" required oninput="calcConvertedAmount()">
           <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); font-weight:700; color:#90a4ae;">$</span>
         </div>
+        <div id="modal-min-text" style="margin-top:6px; font-size:12px; color:#90a4ae;">Minimum deposit: $10.00</div>
 
         {{-- Converted Amount --}}
         <div style="margin-top:8px; padding:10px; background:#141720; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
@@ -924,7 +925,10 @@ function renderMethodCard($name, $minText, $logoKey, $minVal, $curr, $rate, $dbM
   $conversionRate = $matched ? (float)$matched->conversion_rate : (float)$rate;
   $walletAddress = $customAddr ?? ($matched ? $matched->wallet_address : ($currency === 'PKR' ? '03001234567' : 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'));
   $description = $customDesc ?? ($matched && $matched->description ? $matched->description : "Please send the required {$currency} amount to the wallet/account address provided above. After payment, enter the Transaction ID or upload your receipt.");
-  $minAmount = $matched ? (float)$matched->min_amount : (float)$minVal;
+  // Effective minimum: the matched row's min_amount column floored
+  // at $10 ($50 for major crypto methods) — same rule the server
+  // enforces (PaymentMethod::effectiveMinAmount()).
+  $minAmount = $matched ? $matched->effectiveMinAmount() : (float)$minVal;
 
   $dataObj = json_encode([
     'id' => $methodId,
@@ -1056,6 +1060,13 @@ function openDepositStep(data) {
   if (parseFloat(amtInput.value) < parseFloat(data.min_amount)) {
     amtInput.value = data.min_amount;
   }
+  // Show the per-method minimum next to the amount field so the
+  // user sees it before submitting (mirrors the server rule).
+  const minText = document.getElementById('modal-min-text');
+  if (minText) {
+    minText.textContent = 'Minimum deposit for ' + data.name + ': $' + parseFloat(data.min_amount || 0).toFixed(2)
+      + (data.max_amount ? ' — Maximum: $' + parseFloat(data.max_amount).toFixed(2) : '');
+  }
 
   calcConvertedAmount();
 
@@ -1181,16 +1192,21 @@ function closeAppAlert() {
   if (backdrop) backdrop.style.display = 'none';
 }
 
-// Validation: Require either Transaction ID or proof image screenshot
+// Validation: amount must be within the selected method's limits
+// (same per-method minimum the server enforces), and either a
+// Transaction ID or a proof image screenshot is required.
 document.getElementById('depositForm')?.addEventListener('submit', function(e) {
-  if (currentMethodData && currentMethodData.provider === 'lgpay') {
+  if (currentMethodData) {
     const amt = parseFloat(document.getElementById('deposit-amount-input').value) || 0;
-    if (amt < parseFloat(currentMethodData.min_amount || 0) || (currentMethodData.max_amount && amt > parseFloat(currentMethodData.max_amount))) {
+    const minAmt = parseFloat(currentMethodData.min_amount || 0);
+    if (amt < minAmt || (currentMethodData.max_amount && amt > parseFloat(currentMethodData.max_amount))) {
       e.preventDefault();
-      showAppAlert('Please enter an amount within the allowed limits.');
+      showAppAlert('The minimum deposit for ' + currentMethodData.name + ' is $' + minAmt.toFixed(2) + '. Please enter at least $' + minAmt.toFixed(2) + '.');
       return false;
     }
+  }
 
+  if (currentMethodData && currentMethodData.provider === 'lgpay') {
     const btn = document.getElementById('btnSubmitDeposit');
     btn.innerText = 'Redirecting...';
     btn.disabled = true;

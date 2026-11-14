@@ -541,10 +541,10 @@
             <div class="qx-tcard-stat-lbl">Duration</div>
           </div>
         </div>
-        <button type="button" class="qx-tcard-btn" onclick="openTournamentModal('Crazy Wednesday', '7 500 $', '10 $', '1 day')">
+        <a href="{{ route('tournament.detail', 1) }}" class="qx-tcard-btn" style="text-decoration:none;">
           <span>Details</span>
           <span class="btn-info-icon">i</span>
-        </button>
+        </a>
       </div>
 
       <div class="qx-tournament-card">
@@ -568,60 +568,12 @@
             <div class="qx-tcard-stat-lbl">Duration</div>
           </div>
         </div>
-        <button type="button" class="qx-tcard-btn" onclick="openTournamentModal('Weekend Battle', '5 000 $', '1 $', '2 days')">
+        <a href="{{ route('tournament.detail', 3) }}" class="qx-tcard-btn" style="text-decoration:none;">
           <span>Details</span>
           <span class="btn-info-icon">i</span>
-        </button>
+        </a>
       </div>
     @endif
-  </div>
-</div>
-
-<!-- Modal -->
-<div class="qx-modal-backdrop" id="t-modal" onclick="closeTournamentModal(event)">
-  <div class="qx-modal-content" onclick="event.stopPropagation()">
-    <button type="button" class="qx-modal-close" onclick="closeTournamentModal()">&times;</button>
-    <div id="t-modal-details">
-    <div class="qx-modal-header-title" id="m-title">Tournament Details</div>
-    <div style="color: #7d8ea9; font-size: 13px; line-height: 1.5; margin-bottom: 16px;" id="m-desc">
-      Compete with other traders and climb the leaderboard. The highest balance at the end of the duration wins the prize pool!
-    </div>
-
-    <div style="font-weight: 700; font-size: 14px; margin-bottom: 10px;">Prize Distribution:</div>
-    <div class="qx-modal-prizes-list">
-      <div class="qx-modal-prize-row">
-        <span style="color: #ffd700; font-weight: 700;">🥇 1st Place</span>
-        <b style="color: #00e676;" id="m-p1">40% of Pool</b>
-      </div>
-      <div class="qx-modal-prize-row">
-        <span style="color: #c0c0c0; font-weight: 700;">🥈 2nd Place</span>
-        <b style="color: #00e676;" id="m-p2">25% of Pool</b>
-      </div>
-      <div class="qx-modal-prize-row">
-        <span style="color: #cd7f32; font-weight: 700;">🥉 3rd Place</span>
-        <b style="color: #00e676;" id="m-p3">15% of Pool</b>
-      </div>
-      <div class="qx-modal-prize-row">
-        <span style="color: #8b9ab4;">4th - 10th Place</span>
-        <b style="color: #00e676;">20% Shared</b>
-      </div>
-    </div>
-
-    <div style="display: flex; justify-content: space-between; font-size: 13px; color: #8b9ab4; margin-bottom: 20px;">
-      <div>Entry Fee: <b style="color: #fff;" id="m-fee">0 $</b></div>
-      <div>Duration: <b style="color: #fff;" id="m-dur">1 day</b></div>
-    </div>
-
-    <button type="button" class="qx-modal-btn-participate" onclick="participateTournament()">
-      Participate in Tournament
-    </button>
-    </div>
-    <div id="t-modal-success" style="display: none; text-align: center;">
-      <div style="font-size: 44px; line-height: 1; margin-bottom: 14px;">✓</div>
-      <div class="qx-modal-header-title" style="text-align: center;">Registration Successful</div>
-      <div style="color: #7d8ea9; font-size: 13.5px; line-height: 1.6; margin-bottom: 24px;">You have successfully registered for the tournament! Head to Trade to participate.</div>
-      <a href="{{ route('trade') }}" class="qx-modal-btn-participate" style="display: block; text-decoration: none; text-align: center;">Go to Trade</a>
-    </div>
   </div>
 </div>
 
@@ -648,27 +600,10 @@
     }
   }
 
-  function openTournamentModal(title, prize, fee, dur, desc) {
-    document.getElementById('m-title').textContent = title + ' (' + prize + ')';
-    document.getElementById('m-fee').textContent = fee;
-    document.getElementById('m-dur').textContent = dur;
-    if (desc) {
-      document.getElementById('m-desc').textContent = desc;
-    } else {
-      document.getElementById('m-desc').textContent = 'Compete with other traders and climb the leaderboard. The highest balance at the end of the duration wins the prize pool!';
-    }
-    document.getElementById('t-modal-details').style.display = 'block';
-    document.getElementById('t-modal-success').style.display = 'none';
-    document.getElementById('t-modal').style.display = 'flex';
-  }
-
-  function closeTournamentModal() {
-    document.getElementById('t-modal').style.display = 'none';
-  }
-
-  function participateTournament() {
-    document.getElementById('t-modal-details').style.display = 'none';
-    document.getElementById('t-modal-success').style.display = 'block';
-  }
+  // NOTE: the old list-page registration modal (openTournamentModal /
+  // participateTournament) was removed: it showed "Registration
+  // Successful" without ever calling the server. Every card on this
+  // page now links to the tournament detail page, whose Join modal
+  // posts to the real POST /tournament/{id}/register endpoint.
 </script>
 @endsection

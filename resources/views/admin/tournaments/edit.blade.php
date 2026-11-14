@@ -122,7 +122,7 @@
                     @foreach($distribution as $item)
                         <div class="prize-row" style="display:grid; grid-template-columns: 1fr 1fr 40px; gap:10px; align-items:center;">
                             <input type="text" name="prize_places[]" class="form-control" placeholder="1 Place" value="{{ $item['place'] ?? '' }}">
-                            <input type="text" name="prize_amounts[]" class="form-control" placeholder="2300$" value="{{ $item['prize'] ?? '' }}">
+                            <input type="text" name="prize_amounts[]" class="form-control" placeholder="1000$" value="{{ $item['prize'] ?? '' }}">
                             <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
                         </div>
                     @endforeach

@@ -68,7 +68,9 @@ class Tournament extends Model
         if ($this->start_date) {
             return $this->start_date->format('d M H:i');
         }
-        return '16 Sep 05:00';
+        // No stored start date: show nothing fake rather than an
+        // invented date.
+        return '—';
     }
 
     public function getFormattedEndAttribute(): string
@@ -76,7 +78,37 @@ class Tournament extends Model
         if ($this->end_date) {
             return $this->end_date->format('d M H:i');
         }
-        return '17 Sep 05:00';
+        return '—';
+    }
+
+    /**
+     * Badge text recomputed from the real start/end dates and status
+     * on every read — the stored badge_text column is no longer
+     * trusted (it held stale strings like "Until start: 1 day(s)"
+     * that were never recomputed as the dates passed).
+     */
+    public function getBadgeTextAttribute(): ?string
+    {
+        if (in_array($this->status, ['completed', 'finished', 'cancelled'], true)) {
+            return 'Finished';
+        }
+        $now = now();
+        if ($this->start_date && $now->lt($this->start_date)) {
+            $days = (int) $now->diffInDays($this->start_date);
+            $days = max($days, 1);
+            return 'Until start: ' . $days . ' day(s)';
+        }
+        if ($this->end_date && $now->gt($this->end_date)) {
+            return 'Finished';
+        }
+        if ($this->end_date) {
+            $days = (int) $now->diffInDays($this->end_date);
+            return $days > 0 ? 'Ends in: ' . $days . ' day(s)' : 'Ends today';
+        }
+        if ($this->start_date) {
+            return 'Live now';
+        }
+        return $this->getRawOriginal('badge_text') ?: 'Active';
     }
 
     public function getResolvedPrizeDistributionAttribute(): array
@@ -88,13 +120,15 @@ class Tournament extends Model
         $total = (float) $this->prize_pool;
         if ($total <= 0) $total = 7500;
 
-        // Default 5-place distribution percentages
+        // Default 5-place distribution percentages — real Quotex
+        // Crazy Wednesday split of the $7,500 pool:
+        // $3,000 / $2,000 / $1,000 / $900 / $600.
         $rates = [
-            '1 Place' => 0.3067, // ~$2300 of $7500
-            '2 Place' => 0.2400, // ~$1800 of $7500
-            '3 Place' => 0.2000, // ~$1500 of $7500
-            '4 Place' => 0.1600, // ~$1200 of $7500
-            '5 Place' => 0.0933, // ~$700 of $7500
+            '1 Place' => 0.4000, // $3000 of $7500
+            '2 Place' => 0.2667, // $2000 of $7500 (7500*0.2667=2000.25 -> 2000)
+            '3 Place' => 0.1333, // $1000 of $7500 (7500*0.1333=999.75 -> 1000)
+            '4 Place' => 0.1200, // $900 of $7500
+            '5 Place' => 0.0800, // $600 of $7500
         ];
 
         $items = [];

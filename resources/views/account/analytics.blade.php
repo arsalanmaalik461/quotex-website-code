@@ -436,7 +436,7 @@
         
         <div class="analytics__profile-block">
           <div class="analytics__profile-label">{{ $user->email }}</div>
-          <div class="analytics__profile-value">ID: {{ $user->id ? (93090570 + $user->id) : '93090578' }}</div>
+          <div class="analytics__profile-value">ID: {{ $user->id }}</div>
         </div>
 
         <div class="analytics__profile-block">

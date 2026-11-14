@@ -579,18 +579,25 @@
                 </div>
               </div>
 
-              @if($tournament->entry_fee > 0)
-                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', '{{ number_format($tournament->entry_fee, 0) }}$', {{ $tournament->id }})">
-                  <span class="oQ4Z4">
-                    Join now — {{ number_format($tournament->entry_fee, 0, '.', '') }}$
-                  </span>
-                </button>
+              @if($tournament->is_active && $tournament->status === 'active')
+                @if($tournament->entry_fee > 0)
+                  <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', '{{ number_format($tournament->entry_fee, 0) }}$', {{ $tournament->id }})">
+                    <span class="oQ4Z4">
+                      Join now — {{ number_format($tournament->entry_fee, 0, '.', '') }}$
+                    </span>
+                  </button>
+                @else
+                  <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', 'Free', {{ $tournament->id }})">
+                    <span class="oQ4Z4">
+                      Join now — Free
+                    </span>
+                  </button>
+                @endif
               @else
-                <button type="button" class="KtjVk JQZcs _5qIw tournamentInformation__body-button" onclick="joinTournamentModal('{{ addslashes($tournament->title) }}', 'Free', {{ $tournament->id }})">
-                  <span class="oQ4Z4">
-                    Join now — Free
-                  </span>
-                </button>
+                {{-- Finished / inactive tournament: no registration possible
+                     (the register endpoint rejects it too — this just avoids
+                     offering a Join button that can only fail). --}}
+                <span class="tournamentInformation__body-button" style="background:#232c3f; color:#8b9ab4; cursor:default;">Registration closed</span>
               @endif
             </div>
           </div>

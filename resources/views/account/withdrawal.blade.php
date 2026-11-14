@@ -645,21 +645,28 @@ hr.form-divider {
                     <select name="method" id="payment-method-select" class="input-control-cabinet__select-el" onchange="updateWithdrawalFields()" required>
                       @if(isset($methods) && $methods->count() > 0)
                         @foreach($methods as $method)
-                          <option value="{{ $method->name }}" data-type="{{ $method->type }}" data-currency="{{ $method->currency }}" data-desc="{{ $method->description }}" {{ $loop->first ? 'selected' : '' }}>
+                          <option value="{{ $method->name }}" data-id="{{ $method->id }}" data-min-amount="{{ $method->effective_min_amount }}" data-type="{{ $method->type }}" data-currency="{{ $method->currency }}" data-desc="{{ $method->description }}" {{ $loop->first ? 'selected' : '' }}>
                             {{ $method->name }} {{ $method->currency && $method->currency !== 'USD' ? '('.$method->currency.')' : '' }}
                           </option>
                         @endforeach
                       @else
-                        <option value="Binance Pay" selected>Binance Pay</option>
-                        <option value="USDT (TRC-20)">USDT (TRC-20)</option>
-                        <option value="Easypaisa">Easypaisa</option>
-                        <option value="JazzCash">JazzCash</option>
-                        <option value="Bank Card">Bank Card</option>
+                        <option value="Binance Pay" data-min-amount="10" selected>Binance Pay</option>
+                        <option value="USDT (TRC-20)" data-min-amount="50">USDT (TRC-20)</option>
+                        <option value="Easypaisa" data-min-amount="10">Easypaisa</option>
+                        <option value="JazzCash" data-min-amount="10">JazzCash</option>
+                        <option value="Bank Card" data-min-amount="10">Bank Card</option>
                       @endif
                     </select>
                   </div>
                   <svg class="select-arrow-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
                 </label>
+                {{-- Resolved server-side by id (preferred) or by method
+                     name; kept in sync with the select by JS below. --}}
+                <input type="hidden" name="payment_method_id" id="payment-method-id" value="">
+                {{-- Per-method minimum + fee preview, so the user sees
+                     both before submitting (server enforces the same). --}}
+                <p id="method-min-hint" style="font-size:12px; color:#8b96a8; margin:6px 0 0;">Minimum withdrawal: $10.00</p>
+                <p id="withdrawal-fee-hint" style="font-size:12px; color:#8b96a8; margin:4px 0 0;"></p>
               </div>
             </div>
 
@@ -769,7 +776,7 @@ hr.form-divider {
                   $isSuccess = in_array($tx->status, ['completed', 'approved', 'successed', 'success']);
                   $isFailed = in_array($tx->status, ['failed', 'rejected', 'canceled']);
                   $statusClass = $isSuccess ? 'success' : ($isFailed ? 'failed' : 'pending');
-                  $statusLabel = $isSuccess ? 'Successed' : ($isFailed ? 'Failed' : 'In progress');
+                  $statusLabel = $isSuccess ? 'Successful' : ($isFailed ? 'Failed' : 'In progress');
                 @endphp
                 <div class="row">
                   <div class="col-meta">
@@ -794,6 +801,9 @@ hr.form-divider {
                   <div class="col-amount">
                     <span class="req-method">{{ $tx->method }}</span>
                     <b class="req-val">-{{ number_format($tx->amount, 2) }} $</b>
+                    @if(!empty($tx->fee_amount) && (float) $tx->fee_amount > 0)
+                      <span style="font-size:11px; color:#ffab00;">Fee ${{ number_format((float) $tx->fee_amount, 2) }} · You receive ${{ number_format((float) ($tx->net_amount ?? ((float) $tx->amount - (float) $tx->fee_amount)), 2) }}</span>
+                    @endif
                   </div>
                 </div>
               @endforeach
@@ -944,7 +954,7 @@ hr.form-divider {
   <div class="page-footer">
     <ul class="page-footer__advantages">
       <li>Minimum deposit amount: <span>$10</span></li>
-      <li>Minimum withdrawal amount: <span>$10</span></li>
+      <li>Minimum withdrawal amount: <span>$10 ($50 for major cryptocurrencies)</span></li>
       <li>Quick withdrawal from your account</li>
       <li>First 2 withdrawals in 24 hours are commission-free; then a 3% fee applies</li>
     </ul>
@@ -978,6 +988,49 @@ hr.form-divider {
 </div>
 
 <script>
+// Withdrawals this user has already created today (server count).
+// The first 2 same-day withdrawals are fee-free; the 3rd and every
+// later one is charged 3%. This preview mirrors the server rule —
+// the server recomputes the fee itself, so editing this cannot
+// dodge it.
+const withdrawalsToday = {{ (int) ($withdrawalsToday ?? 0) }};
+
+function updateWithdrawalFeeHint() {
+  const select = document.getElementById('payment-method-select');
+  const amtInput = document.getElementById('amount');
+  const minHint = document.getElementById('method-min-hint');
+  const feeHint = document.getElementById('withdrawal-fee-hint');
+  if (!select) return;
+
+  const opt = select.options[select.selectedIndex];
+  const minAmt = opt ? parseFloat(opt.dataset.minAmount || 10) : 10;
+
+  // Keep the hidden payment_method_id in sync (server resolves by
+  // id when present, otherwise by method name).
+  const idInput = document.getElementById('payment-method-id');
+  if (idInput) idInput.value = opt && opt.dataset.id ? opt.dataset.id : '';
+
+  if (amtInput) {
+    amtInput.min = minAmt;
+    if (parseFloat(amtInput.value) < minAmt) amtInput.value = minAmt;
+  }
+  if (minHint) {
+    minHint.textContent = 'Minimum withdrawal for ' + select.value + ': $' + minAmt.toFixed(2);
+  }
+  if (feeHint) {
+    const amt = amtInput ? parseFloat(amtInput.value) || 0 : 0;
+    const n = withdrawalsToday + 1;
+    if (n >= 3 && amt > 0) {
+      const fee = Math.round(amt * 0.03 * 100) / 100;
+      feeHint.textContent = 'This will be withdrawal #' + n + ' today — a 3% fee of $' + fee.toFixed(2) + ' applies, so you will receive $' + (amt - fee).toFixed(2) + '.';
+    } else if (n >= 3) {
+      feeHint.textContent = 'This will be withdrawal #' + n + ' today — a 3% fee applies (the first 2 withdrawals each day are fee-free).';
+    } else {
+      feeHint.textContent = 'This will be withdrawal #' + n + ' today — no fee (the first 2 withdrawals each day are fee-free).';
+    }
+  }
+}
+
 function toggleFaq(el) {
   const item = el.closest('.faq__item');
   if (item) {
@@ -1027,6 +1080,8 @@ function updateWithdrawalFields() {
     if (purseLabel) purseLabel.textContent = 'Account / Purse Number';
     if (purseInput) purseInput.placeholder = 'Enter account or wallet number...';
   }
+
+  updateWithdrawalFeeHint();
 }
 
 function updatePurseLabel() {
@@ -1043,6 +1098,8 @@ function updatePurseLabel() {
 
 document.addEventListener('DOMContentLoaded', () => {
   updateWithdrawalFields();
+  const amtInput = document.getElementById('amount');
+  if (amtInput) amtInput.addEventListener('input', updateWithdrawalFeeHint);
 });
 </script>
 @endsection

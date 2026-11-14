@@ -2633,6 +2633,24 @@ body.quotex-platform-body {
   border: 1px solid rgba(255, 152, 0, 0.25);
 }
 
+/* Tournament-entry notifications (own type — never a withdrawal). */
+.notif-icon-tournament {
+  background: rgba(255, 214, 0, 0.12);
+  border: 1px solid rgba(255, 214, 0, 0.3);
+}
+
+.notif-item.unread.notif-type-tournament_entry {
+  border-left-color: #ffd600;
+}
+
+.tournament-emoji {
+  font-size: 17px;
+}
+
+.text-tournament {
+  color: #ffd600 !important;
+}
+
 .notif-icon-pending {
   background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.25);
