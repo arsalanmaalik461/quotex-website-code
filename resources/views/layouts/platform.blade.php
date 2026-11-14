@@ -297,7 +297,7 @@
       </div>
 
       <!-- Welcome Bonus Banner (Exact Quotex DOM) -->
-      <a href="{{ route('deposit') }}" class="q04vx header-banner-top" title="Deposit and get 50% bonus">
+      <a href="{{ route('deposit', ['promo' => 'WELCOME50']) }}" class="q04vx header-banner-top" title="Deposit and get 50% bonus">
         <div class="r7UKG">
           <span>Get a <b>50% bonus</b> on your deposit!</span>
           <div class="VRCVp">50%</div>

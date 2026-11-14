@@ -16,6 +16,10 @@ use Illuminate\Support\Facades\Schema;
 
 class TradeController extends Controller
 {
+    // Real Quotex caps a single trade at $1,000 — same cap as the JS client
+    // (MAX_TRADE_INVESTMENT in public/js/trade.js). Enforced in placeTrade
+    // validation below; do not raise without changing both sides.
+    public const MAX_TRADE_INVESTMENT = 1000;
 
     public static function settleExpiredTradesForUser($user)
     {
@@ -78,8 +82,23 @@ class TradeController extends Controller
         $btcAsset = Asset::where('symbol', 'like', '%BTC%')->orWhere('symbol', 'like', '%Bitcoin%')->first();
         $defaultId = $btcAsset ? $btcAsset->id : 1;
         $assetId = $request->query('asset', $defaultId);
-        $assets = Asset::where('is_active', true)->get()->map(function ($a) {
+        $assets = Asset::where('is_active', true)->get();
+        // Real per-asset values (Team 4 P0 fix): 5-min / 24h change from
+        // actual candle closes, payout from the stored admin-configured
+        // value, sentiment from the platform's own recent trades (or the
+        // last-20-candle trend). Attached here so the view can render
+        // them instead of the old crc32-derived values.
+        $statsById = collect(OtcPriceEngine::assetStatsBulk($assets))->keyBy('asset_id');
+        $assets = $assets->map(function ($a) use ($statsById) {
+            $st = $statsById->get((int) $a->id);
             $a->current_price = OtcPriceEngine::getBasePrice($a);
+            $a->payout_1m_pct = $st['payout_1m_pct'] ?? OtcPriceEngine::payoutPercent($a);
+            $a->payout_5m_pct = $st['payout_5m_pct'] ?? OtcPriceEngine::payoutPercent($a);
+            $a->change_5m_pct = $st['change_5m_pct'] ?? null;
+            $a->change_24h_pct = $st['change_24h_pct'] ?? null;
+            $a->sentiment_buy_pct = $st['sentiment_buy_pct'] ?? null;
+            $a->sentiment_sell_pct = $st['sentiment_sell_pct'] ?? null;
+            $a->sentiment_source = $st['sentiment_source'] ?? null;
             return $a;
         });
         $selectedAsset = $assets->firstWhere('id', (int)$assetId) ?? $btcAsset ?? $assets->first();
@@ -102,15 +121,14 @@ class TradeController extends Controller
             })
             ->get();
 
+        // Signed P/L for the day: a win adds payout - investment, a
+        // loss subtracts the investment (less any early-sell buyout),
+        // a draw adds 0. Not clamped at zero — a losing day must show
+        // as negative, or losses are invisible.
         $todayProfit = 0.0;
         foreach ($todayTrades as $t) {
-            if ($t->result === 'win') {
-                $todayProfit += max(0, (float)$t->payout - (float)$t->investment);
-            } elseif ($t->result === 'loss') {
-                $todayProfit -= (float)$t->investment;
-            }
+            $todayProfit += TradeResultService::settledProfit($t);
         }
-        $todayProfit = max(0, $todayProfit);
 
         return view('trade.index', compact('assets', 'selectedAsset', 'user', 'recentTrades', 'activeTrades', 'todayProfit'));
     }
@@ -120,8 +138,10 @@ class TradeController extends Controller
         $request->validate([
             'asset_id'         => 'required|exists:assets,id',
             'direction'        => 'required|in:up,down',
-            'investment'       => 'required|numeric|min:1',
+            'investment'       => 'required|numeric|min:1|max:' . self::MAX_TRADE_INVESTMENT,
             'duration_seconds' => 'required|integer|min:5',
+        ], [
+            'investment.max' => 'Maximum trade amount is $1,000.',
         ]);
 
         $asset = Asset::findOrFail($request->asset_id);
@@ -240,10 +260,9 @@ class TradeController extends Controller
         $user = Auth::user();
         $user->account_type = $request->account_type;
 
+        // Demo balance only: live_balance is NEVER set from a user request.
         if ($request->filled('new_balance') && (float) $request->new_balance >= 0) {
-            if ($request->account_type === 'live') {
-                $user->live_balance = round((float) $request->new_balance, 2);
-            } else {
+            if ($request->account_type === 'demo') {
                 $user->demo_balance = round((float) $request->new_balance, 2);
             }
         }
@@ -294,6 +313,20 @@ class TradeController extends Controller
             $asset->type = (str_contains($symbol ?? '', 'BTC') || str_contains($symbol ?? '', 'ETH')) ? 'crypto' : 'forex';
         }
 
+        // Real per-asset stats (Team 4 P0 fix). No new route: the
+        // existing price-data endpoint answers stats requests.
+        // ?stats=1   -> stats object for this one asset (sentiment strip).
+        // ?stats=all -> {assets: [...]} for every active asset (asset
+        //              modal 24h-change / 5-min payout columns).
+        // Without ?stats the endpoint still returns the candle array.
+        if ($request->query('stats') === 'all') {
+            $all = Asset::where('is_active', true)->get();
+            return response()->json(['assets' => OtcPriceEngine::assetStatsBulk($all)]);
+        }
+        if ($request->boolean('stats')) {
+            return response()->json(OtcPriceEngine::assetStats($asset));
+        }
+
         $count = $request->filled('count') ? (int) $request->query('count') : null;
         $timeframeSec = max(5, (int) $request->query('timeframe', 60));
         $endTime = $request->filled('to_time') 
@@ -311,7 +344,11 @@ class TradeController extends Controller
             'success' => $settled['success'] ?? true,
             'result' => $settled['result'],
             'close_price' => $settled['close_price'],
+            // 'payout' is the gross amount credited back; 'profit' is
+            // the signed P/L (payout - investment, negative on a loss,
+            // 0 on a draw) and is what the UI must display as profit.
             'payout' => $settled['payout'],
+            'profit' => $settled['profit'] ?? null,
             'balance' => $settled['balance'],
         ];
     }

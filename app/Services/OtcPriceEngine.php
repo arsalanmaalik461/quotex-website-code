@@ -465,6 +465,226 @@ class OtcPriceEngine
         return self::getDeterministicPrice($asset, time());
     }
 
+    // -----------------------------------------------------------------
+    // Real payout / change / sentiment (P0 fix, Team 4).
+    //
+    // There is no candles table in this codebase: a candle close IS
+    // getDeterministicPrice() evaluated at a candle-end timestamp
+    // (see generateCandles(): close = getDeterministicPrice(cTime+tf),
+    // and the forming candle's close = getDeterministicPrice(now)).
+    // The changes below are therefore computed from exactly the same
+    // closes the chart renders, by evaluating the price at the
+    // relevant 1-minute candle boundaries instead of regenerating
+    // whole candle series. No hash / random derivation is used
+    // anywhere in this section.
+    // -----------------------------------------------------------------
+
+    /**
+     * Documented fallback when an asset has no stored payout.
+     * Matches the assets migration default (85).
+     */
+    public const DEFAULT_PAYOUT_PERCENT = 85;
+
+    /**
+     * Stored admin-configured payout %, or the documented default.
+     * Never hash/random-derived.
+     */
+    public static function payoutPercent(Asset $asset): int
+    {
+        $pct = (int) ($asset->payout_percent ?? 0);
+        return $pct > 0 ? min(99, $pct) : self::DEFAULT_PAYOUT_PERCENT;
+    }
+
+    /**
+     * % change between the latest 1-min candle close (the live price
+     * now) and the 1-min candle close $secondsAgo seconds earlier:
+     * (latest - reference) / reference * 100.
+     *
+     * The reference is the close of the 1-min candle containing the
+     * instant ($now - $secondsAgo), i.e. getDeterministicPrice() at
+     * that candle's end timestamp. Returns null when the reference
+     * price is not positive.
+     */
+    public static function changePercent(Asset $asset, int $secondsAgo, ?int $now = null): ?float
+    {
+        $now = $now ?? time();
+        $refEnd = (int) floor(($now - $secondsAgo) / 60) * 60 + 60;
+        if ($refEnd >= $now) {
+            return 0.0;
+        }
+        $latest = self::getDeterministicPrice($asset, (float) $now);
+        $ref = self::getDeterministicPrice($asset, (float) $refEnd);
+        if ($ref <= 0) {
+            return null;
+        }
+        return round((($latest - $ref) / $ref) * 100, 2);
+    }
+
+    /**
+     * Buy vs Sell volume (by investment) for trades opened on this
+     * asset in the last hour, grouped by direction. Returns
+     * [asset_id => ['up' => vol, 'down' => vol, 'count' => n]].
+     * One query for any number of assets (bulk path).
+     */
+    public static function recentTradeVolumes(array $assetIds, ?int $now = null): array
+    {
+        $now = $now ?? time();
+        $assetIds = array_values(array_unique(array_map('intval', $assetIds)));
+        $map = [];
+        foreach ($assetIds as $id) {
+            $map[$id] = ['up' => 0.0, 'down' => 0.0, 'count' => 0];
+        }
+        if ($assetIds === []) {
+            return $map;
+        }
+
+        $since = Carbon::createFromTimestamp($now - 3600);
+        $rows = Trade::whereIn('asset_id', $assetIds)
+            ->where('opened_at', '>=', $since)
+            ->selectRaw('asset_id, direction, SUM(investment) as vol, COUNT(*) as cnt')
+            ->groupBy('asset_id', 'direction')
+            ->get();
+
+        foreach ($rows as $row) {
+            $id = (int) $row->asset_id;
+            if (!isset($map[$id])) {
+                continue;
+            }
+            $dir = $row->direction === 'down' ? 'down' : 'up';
+            $map[$id][$dir] += (float) $row->vol;
+            $map[$id]['count'] += (int) $row->cnt;
+        }
+
+        return $map;
+    }
+
+    /**
+     * Traders sentiment for one asset.
+     *
+     * Primary source: the platform's OWN trades — volume-weighted
+     * Buy (up) vs Sell (down) share among trades opened on this
+     * asset in the last hour. Fallback (no recent trades): trend of
+     * the last 20 completed 1-min candles — share of closes that
+     * rose vs fell; a flat market (no rises/falls) reads 50/50.
+     *
+     * Returns ['buy_pct', 'sell_pct', 'source' ('trades'|'candles'),
+     * 'trade_count', 'buy_volume', 'sell_volume', 'up_candles',
+     * 'down_candles']. $tradeVolumes is the pre-aggregated bulk map
+     * entry for this asset (see recentTradeVolumes()); pass null to
+     * query it for this asset only.
+     */
+    public static function sentimentForAsset(Asset $asset, ?int $now = null, ?array $tradeVolumes = null): array
+    {
+        $now = $now ?? time();
+
+        if ($tradeVolumes === null) {
+            $tradeVolumes = self::recentTradeVolumes([(int) $asset->id], $now)[(int) $asset->id]
+                ?? ['up' => 0.0, 'down' => 0.0, 'count' => 0];
+        }
+
+        $buyVol = (float) ($tradeVolumes['up'] ?? 0);
+        $sellVol = (float) ($tradeVolumes['down'] ?? 0);
+        $count = (int) ($tradeVolumes['count'] ?? 0);
+
+        if ($count > 0 && ($buyVol + $sellVol) > 0) {
+            $buyPct = (int) round($buyVol / ($buyVol + $sellVol) * 100);
+            return [
+                'buy_pct' => $buyPct,
+                'sell_pct' => 100 - $buyPct,
+                'source' => 'trades',
+                'trade_count' => $count,
+                'buy_volume' => round($buyVol, 2),
+                'sell_volume' => round($sellVol, 2),
+                'up_candles' => null,
+                'down_candles' => null,
+            ];
+        }
+
+        // Fallback: last 20 completed 1-min candles (closes at the
+        // 1-min boundaries ending at/before now).
+        $up = 0;
+        $down = 0;
+        $prevClose = null;
+        for ($k = 20; $k >= 0; $k--) {
+            $end = (int) floor($now / 60) * 60 - ($k * 60);
+            $close = self::getDeterministicPrice($asset, (float) $end);
+            if ($prevClose !== null) {
+                if ($close > $prevClose) {
+                    $up++;
+                } elseif ($close < $prevClose) {
+                    $down++;
+                }
+            }
+            $prevClose = $close;
+        }
+
+        $total = $up + $down;
+        $buyPct = $total > 0 ? (int) round($up / $total * 100) : 50;
+
+        return [
+            'buy_pct' => $buyPct,
+            'sell_pct' => 100 - $buyPct,
+            'source' => 'candles',
+            'trade_count' => 0,
+            'buy_volume' => 0.0,
+            'sell_volume' => 0.0,
+            'up_candles' => $up,
+            'down_candles' => $down,
+        ];
+    }
+
+    /**
+     * All real per-asset values the UI needs in one array.
+     *
+     * payout_1m_pct / payout_5m_pct are BOTH the stored
+     * admin-configured payout: there is no per-expiry payout in the
+     * DB, and the old 5-min value (stored payout minus a crc32-derived
+     * 0-4) was fiction. change_5m_pct / change_24h_pct come from
+     * actual candle closes (see changePercent()).
+     */
+    public static function assetStats(Asset $asset, ?int $now = null, ?array $tradeVolumes = null): array
+    {
+        $now = $now ?? time();
+        $payout = self::payoutPercent($asset);
+        $sentiment = self::sentimentForAsset($asset, $now, $tradeVolumes);
+
+        return [
+            'asset_id' => (int) $asset->id,
+            'symbol' => $asset->symbol,
+            'payout_1m_pct' => $payout,
+            'payout_5m_pct' => $payout,
+            'change_5m_pct' => self::changePercent($asset, 300, $now),
+            'change_24h_pct' => self::changePercent($asset, 86400, $now),
+            'sentiment_buy_pct' => $sentiment['buy_pct'],
+            'sentiment_sell_pct' => $sentiment['sell_pct'],
+            'sentiment_source' => $sentiment['source'],
+            'sentiment_trade_count' => $sentiment['trade_count'],
+        ];
+    }
+
+    /**
+     * assetStats() for a whole asset list with a single trades query.
+     */
+    public static function assetStatsBulk($assets, ?int $now = null): array
+    {
+        $now = $now ?? time();
+        $ids = [];
+        foreach ($assets as $asset) {
+            $ids[] = (int) $asset->id;
+        }
+        $volumes = self::recentTradeVolumes($ids, $now);
+
+        $out = [];
+        foreach ($assets as $asset) {
+            $out[] = self::assetStats(
+                $asset,
+                $now,
+                $volumes[(int) $asset->id] ?? ['up' => 0.0, 'down' => 0.0, 'count' => 0]
+            );
+        }
+        return $out;
+    }
+
     /**
      * Auto-reset control mode when duration expires.
      */

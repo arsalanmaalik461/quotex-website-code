@@ -761,7 +761,7 @@
 
             <div class="pending-field-block">
               <label>Period:</label>
-              <div class="pending-period-box">M1</div>
+              <div class="pending-period-box" id="pending-period-quote">M1</div>
             </div>
 
             <div class="pending-field-block">
@@ -794,13 +794,13 @@
           <div class="pending-tab-body" id="pending-body-time" style="display: none;">
             <div class="pending-field-block">
               <label>Time:</label>
-              <input type="text" id="pending-time-input" class="pending-val-input" value="04/09 21:24:00">
+              <input type="datetime-local" step="1" id="pending-time-input" class="pending-val-input">
               <div class="pending-hint-text">Current time: <span id="pending-cur-time-lbl">21:22:34</span></div>
             </div>
 
             <div class="pending-field-block">
               <label>Period:</label>
-              <div class="pending-period-box">M1</div>
+              <div class="pending-period-box" id="pending-period-time">M1</div>
             </div>
 
             <div class="pending-field-block">
@@ -870,7 +870,7 @@
             <div class="control-val-display" id="time-display">00:01:00</div>
             <button type="button" class="btn-step" id="time-plus">+</button>
           </div>
-          <span class="control-switch-label">SWITCH TIME</span>
+          <span class="control-switch-label" id="btn-switch-time-mode" style="cursor:pointer;" title="Switch between duration and expiration time">SWITCH TIME</span>
         </fieldset>
 
         <!-- Investment Fieldset -->
@@ -879,7 +879,7 @@
           <div class="control-input-group">
             <button type="button" class="btn-step" id="invest-minus">−</button>
             <div class="control-input-wrap">
-              <input type="number" id="investment-input" value="100" min="1" step="1" class="control-input">
+              <input type="number" id="investment-input" value="1" min="1" step="1" class="control-input">
               <span class="currency-suffix" id="invest-suffix">$</span>
             </div>
             <button type="button" class="btn-step" id="invest-plus">+</button>
@@ -955,7 +955,18 @@
           <!-- Closed Trades History Slot -->
           <div class="trades-closed-slot" id="trade-list">
             @forelse($recentTrades as $trade)
-              <div class="qx-deal-card closed-deal {{ $trade->result === 'win' ? 'deal-win' : 'deal-loss' }}">
+              @php
+                $cardProfit = \App\Services\TradeResultService::settledProfit($trade);
+                $cardIsDraw = ($trade->result === 'draw' || $trade->result === 'tie');
+                $cardProfitStr = ($cardProfit > 0 ? '+' : ($cardProfit < 0 ? '-' : '')) . number_format(abs($cardProfit), 2) . ' $';
+                $cardDiffPips = null;
+                if ($trade->close_price !== null && $trade->open_price !== null) {
+                    $cardDigits = $trade->asset->digits ?? 5;
+                    // Same pip convention as the engine: pip = 10^(-digits).
+                    $cardDiffPips = (int) round(($trade->close_price - $trade->open_price) * pow(10, $cardDigits));
+                }
+              @endphp
+              <div class="qx-deal-card closed-deal {{ $trade->result === 'win' ? 'deal-win' : ($cardIsDraw ? '' : 'deal-loss') }}">
                 <div class="deal-card-main" onclick="this.parentElement.classList.toggle('expanded')">
                   <div class="deal-row-top">
                     <div class="deal-sym-wrap">
@@ -966,12 +977,12 @@
                     <span class="deal-duration-val">00:00:{{ sprintf('%02d', $trade->duration_seconds ?? 5) }}</span>
                   </div>
                   <div class="deal-row-mid">
-                    <div class="deal-invest-dir {{ $trade->result === 'win' ? 'win' : 'loss' }}">
-                      <span class="deal-arrow-icon">{{ $trade->result === 'win' ? '+' : '-' }}</span>
+                    <div class="deal-invest-dir {{ $trade->result === 'win' ? 'win' : ($cardIsDraw ? '' : 'loss') }}">
+                      <span class="deal-arrow-icon">{{ $trade->result === 'win' ? '+' : ($cardIsDraw ? '=' : '-') }}</span>
                       <span class="deal-invest-val">{{ number_format($trade->investment, 0) }} $</span>
                     </div>
-                    <span class="deal-payout-val {{ $trade->result === 'win' ? 'profit text-green' : 'loss text-red' }}">
-                      {{ $trade->result === 'win' ? '+' . number_format($trade->payout, 2) . ' $' : '0.00 $' }}
+                    <span class="deal-payout-val {{ $trade->result === 'win' ? 'profit text-green' : ($cardIsDraw ? '' : 'loss text-red') }}">
+                      {{ $cardProfitStr }}
                     </span>
                   </div>
                 </div>
@@ -983,7 +994,7 @@
                   <div class="deal-detail-row"><span>Open time:</span><b>{{ $trade->created_at->format('d.m.Y H:i:s') }}</b></div>
                   <div class="deal-detail-row"><span>Close time:</span><b>{{ $trade->updated_at->format('d.m.Y H:i:s') }}</b></div>
                   <div class="deal-detail-row"><span>Duration:</span><b>00:00:{{ sprintf('%02d', $trade->duration_seconds ?? 5) }}</b></div>
-                  <div class="deal-detail-row"><span>Difference:</span><b class="{{ $trade->result === 'win' ? 'text-green' : 'text-red' }}">{{ $trade->result === 'win' ? '+7' : '-6' }}</b></div>
+                  <div class="deal-detail-row"><span>Difference:</span><b class="{{ $trade->result === 'win' ? 'text-green' : ($cardIsDraw ? '' : 'text-red') }}">{{ $cardDiffPips === null ? '—' : (($cardDiffPips > 0 ? '+' : '') . $cardDiffPips) }}</b></div>
                 </div>
               </div>
             @empty
@@ -1043,11 +1054,13 @@
     <div class="asset-items-list qx-asset-table-body" id="asset-list">
       @foreach($assets as $asset)
         @php
-          $h = crc32($asset->symbol);
-          $changeVal = (($h % 300) - 100) / 100;
+          // Real values attached by TradeController::index() via OtcPriceEngine::assetStats():
+          // 24h change from real candle closes; payouts are the stored admin values.
+          $changeVal = (float) ($asset->change_24h_pct ?? 0);
           $changeStr = ($changeVal >= 0 ? '+' : '') . number_format($changeVal, 2) . '%';
           $isPositive = $changeVal >= 0;
-          $payout5m = max(70, $asset->payout_percent - ($h % 5));
+          $payout1m = (float) ($asset->payout_1m_pct ?? $asset->payout_percent);
+          $payout5m = (float) ($asset->payout_5m_pct ?? $asset->payout_percent);
         @endphp
         <div class="asset-list-item qx-asset-row {{ $asset->id == $selectedAsset->id ? 'selected' : '' }}"
              data-id="{{ $asset->id }}"
@@ -1081,7 +1094,7 @@
               {{ $isPositive ? '↑' : '↓' }} {{ $changeStr }}
             </span>
           </div>
-          <div class="qx-row-payout qx-payout-1m">{{ $asset->payout_percent }}%</div>
+          <div class="qx-row-payout qx-payout-1m">{{ $payout1m }}%</div>
           <div class="qx-row-payout qx-payout-5m">{{ $payout5m }}%</div>
         </div>
       @endforeach
@@ -1893,8 +1906,14 @@
 
   <!-- TOAST NOTIFICATION -->
   <div id="trade-toast" class="trade-toast">
+    <div class="toast-title">Notification</div>
+    <div class="toast-body">Message here</div>
+  </div>
 
   <!-- Trade confirm modal (shown when 1-click trade is OFF instead of a native confirm()) -->
+  <!-- Top-level sibling of the toast, NOT nested inside it: the toast is
+       opacity:0 / pointer-events:none until shown, which made the modal
+       invisible and unclickable while it lived inside the toast element. -->
   <div id="trade-confirm-modal" class="trade-confirm-backdrop" style="display:none;">
     <div class="trade-confirm-box">
       <div class="trade-confirm-title">Confirm trade</div>
@@ -1904,9 +1923,6 @@
         <button type="button" class="trade-confirm-btn ok" onclick="confirmTradePlacement()">Confirm</button>
       </div>
     </div>
-  </div>
-    <div class="toast-title">Notification</div>
-    <div class="toast-body">Message here</div>
   </div>
 
   <!-- LightweightCharts Standalone -->

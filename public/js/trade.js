@@ -104,7 +104,7 @@
     assetPanelMode: 'replace', // 'replace' (replace active tab) or 'add' (add new tab via '+')
     durationSeconds: 60,
     timeMode: 'duration', // 'duration' or 'clock'
-    investment: 100,
+    investment: 1,
     investMode: 'fixed', // 'fixed' ($) or 'percent' (%)
     currentPrice: 0,
     candles: [],
@@ -148,6 +148,10 @@
     drawingPoints: [],
     chartMarkers: [],
     pendingPriceLine: null,
+    pendingTab: 'quote', // 'quote' (By Price) or 'time' (By Time)
+    pendingOrders: [],
+    pendingPollTimer: null,
+    _pendingLinePrice: null,
   };
 
   // --- DOM Cache ---
@@ -594,6 +598,7 @@
     renderDrawings();
     connectLiveCryptoStream(chosenAsset.symbol);
     updatePayoutCalculation();
+    fetchAssetStats();
     el.assetPanel?.classList.remove('open');
     const ab = document.getElementById('btn-add-asset-tab');
     if (ab) ab.textContent = '+';
@@ -735,34 +740,85 @@
     } catch (e) {}
   }
 
-  // --- Dynamic Traders Sentiment Fluctuations (Exact Quotex) ---
-  let currentSentiment = 57; // 57% red (down), 43% green (up)
-  function updateSentiment(targetVal) {
-    if (typeof targetVal === 'number') {
-      currentSentiment = Math.max(30, Math.min(72, targetVal));
-    } else {
-      const drift = (Math.random() - 0.49) * 3;
-      currentSentiment = Math.max(35, Math.min(68, Math.round(currentSentiment + drift)));
-    }
-    const downPct = currentSentiment;
-    const upPct = 100 - downPct;
+  // --- Traders Sentiment + real asset stats (Team 4 P0 fix) ---
+  // The old strip was a Math.random() random walk seeded at 57% with
+  // no data source. It now shows the SERVER value: Buy share of the
+  // platform's own trades on this asset in the last hour
+  // (volume-weighted), or the last-20-candle trend when the asset has
+  // no recent trades. The strip layout is unchanged: SELL (red) on
+  // top, BUY (green) at the bottom, so buyPct maps to the bottom.
+  // No Math.random() remains in this section.
+  function updateSentiment(buyPct) {
+    if (typeof buyPct !== 'number' || !isFinite(buyPct)) return;
+    const buy = Math.max(0, Math.min(100, Math.round(buyPct)));
+    const sell = 100 - buy;
 
     const topValEl = document.getElementById('sent-top-val');
     const btmValEl = document.getElementById('sent-bottom-val');
     const redLine = document.getElementById('sent-red-line');
     const greenLine = document.getElementById('sent-green-line');
 
-    if (topValEl) topValEl.textContent = `${downPct}%`;
-    if (btmValEl) btmValEl.textContent = `${upPct}%`;
-    if (redLine) redLine.style.height = `${downPct}%`;
-    if (greenLine) greenLine.style.height = `${upPct}%`;
+    if (topValEl) topValEl.textContent = `${sell}%`;
+    if (btmValEl) btmValEl.textContent = `${buy}%`;
+    if (redLine) redLine.style.height = `${sell}%`;
+    if (greenLine) greenLine.style.height = `${buy}%`;
+  }
+
+  // Apply one stats payload to the asset-modal rows (real 24h change
+  // and real 5-min payout, replacing the old crc32-derived display)
+  // and to the sentiment strip for the selected asset.
+  function applyAssetStats(statsList) {
+    if (!Array.isArray(statsList)) return;
+    const byId = new Map(statsList.map(s => [Number(s.asset_id), s]));
+
+    document.querySelectorAll('.asset-list-item').forEach(item => {
+      const st = byId.get(Number(item.dataset.id));
+      if (!st) return;
+      const changePill = item.querySelector('.qx-change-pill');
+      if (changePill && typeof st.change_24h_pct === 'number') {
+        const v = st.change_24h_pct;
+        changePill.textContent = `${v >= 0 ? '↑' : '↓'} ${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+        changePill.classList.toggle('positive', v >= 0);
+        changePill.classList.toggle('negative', v < 0);
+      }
+      const payout1m = item.querySelector('.qx-payout-1m');
+      if (payout1m && typeof st.payout_1m_pct === 'number') payout1m.textContent = `${st.payout_1m_pct}%`;
+      const payout5m = item.querySelector('.qx-payout-5m');
+      if (payout5m && typeof st.payout_5m_pct === 'number') payout5m.textContent = `${st.payout_5m_pct}%`;
+    });
+
+    if (state.selectedAsset) {
+      const mine = byId.get(Number(state.selectedAsset.id));
+      if (mine && typeof mine.sentiment_buy_pct === 'number') {
+        updateSentiment(mine.sentiment_buy_pct);
+      }
+    }
+  }
+
+  let assetStatsInFlight = false;
+  function fetchAssetStats() {
+    if (assetStatsInFlight) return;
+    assetStatsInFlight = true;
+    fetch('/trade/price-data?stats=all')
+      .then(r => r.json())
+      .then(data => {
+        const list = Array.isArray(data) ? data : data.assets;
+        applyAssetStats(list);
+      })
+      .catch(() => {
+        // Keep the last server values on display; never fall back to
+        // a random/hash-derived number.
+      })
+      .finally(() => { assetStatsInFlight = false; });
   }
 
   function startSentimentEngine() {
-    updateSentiment(57);
-    setInterval(() => {
-      updateSentiment();
-    }, 2000);
+    fetchAssetStats();
+    // Sentiment source data (last-hour trades) moves slowly, so poll
+    // every 30s; the 1s candle sync also re-triggers this (throttled,
+    // see syncLatestBackendCandles) so a fresh value arrives with the
+    // regular price refresh.
+    setInterval(fetchAssetStats, 30000);
   }
 
   // --- Dynamic Decimal Precision & Price Formatting ---
@@ -997,6 +1053,11 @@
         state.currentPrice = state.candles[state.candles.length - 1].close;
         updateSeriesData(false);
         updatePriceLabel();
+        // Throttled sentiment/stats refresh on the existing 1s sync
+        // path: roughly every 30th sync (~30s) the server stats are
+        // re-fetched so the strip and asset rows track fresh data.
+        state._sentimentSyncTicks = (state._sentimentSyncTicks || 0) + 1;
+        if (state._sentimentSyncTicks % 30 === 0) fetchAssetStats();
       })
       .catch(() => {});
   }
@@ -1406,8 +1467,17 @@
   }
 
   function applyHideResults() {
-    if (!el.closedTradesContainer || !state.settings.hideResults) return;
-    el.closedTradesContainer.style.display = 'none';
+    // The closed-trades list lives in #trade-list (el.tradeList). The old
+    // code targeted #closed-trades-container, which does not exist (null),
+    // so "Hide trade results" never hid anything. Setting key unchanged.
+    const list = el.tradeList;
+    if (!list) return;
+    if (!state.settings.hideResults) {
+      // Unhiding restores the list's natural display.
+      list.style.display = '';
+      return;
+    }
+    list.style.display = 'none';
     const historyTab = document.querySelector('.trades-tab[data-tab="history"]');
     const activeTab = document.querySelector('.trades-tab[data-tab="active"]');
     if (historyTab && historyTab.classList.contains('active')) {
@@ -1522,6 +1592,10 @@
     if (state.investMode === 'percent') {
       const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
       invest = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
+    }
+    if (invest > MAX_TRADE_INVESTMENT) {
+      showToast('Error', `Maximum trade amount is $${MAX_TRADE_INVESTMENT.toLocaleString('en-US')}.`, 'loss');
+      return;
     }
     text.textContent = `${direction === 'up' ? '↑ Buy' : '↓ Sell'} — ${state.selectedAsset?.symbol || ''} · ${invest} $ · ${state.durationSeconds}s`;
     state._pendingTradeDirection = direction;
@@ -1657,8 +1731,11 @@
     const payout = +(actualInvestment * (1 + payoutPct / 100)).toFixed(2);
 
     if (el.payoutDisplay) el.payoutDisplay.textContent = payout.toFixed(2) + ' $';
+    // The badge is a gain, not a payout: show the profit
+    // (payout - investment), not the gross payout. The "Payout"
+    // preview above stays gross — that one really is a payout.
     const gainBadge = document.getElementById('asset-gain');
-    if (gainBadge) gainBadge.textContent = '+' + payout.toFixed(2) + ' $';
+    if (gainBadge) gainBadge.textContent = '+' + (payout - actualInvestment).toFixed(2) + ' $';
     const investPreview = document.getElementById('invest-preview-display');
     if (investPreview) investPreview.textContent = actualInvestment + ' $';
   }
@@ -1686,7 +1763,7 @@
     state.investMode = state.investMode === 'fixed' ? 'percent' : 'fixed';
     if (el.investModeLabel) el.investModeLabel.textContent = state.investMode === 'fixed' ? 'Investment' : 'Investment %';
     if (el.investPrefix) el.investPrefix.textContent = state.investMode === 'fixed' ? '$' : '%';
-    state.investment = state.investMode === 'fixed' ? 100 : 2;
+    state.investment = state.investMode === 'fixed' ? 1 : 2;
     if (el.investmentInput) el.investmentInput.value = state.investment;
     updatePayoutCalculation();
   });
@@ -1709,6 +1786,10 @@
   });
 
   // --- Multi-Trade Placement & Execution ---
+  // Real Quotex caps a single trade at $1,000 — enforced here and in
+  // TradeController::placeTrade (same cap on both sides).
+  const MAX_TRADE_INVESTMENT = 1000;
+
   function placeTrade(direction) {
     // 1-click trade OFF → ask first with the in-app confirm (no native dialog).
     if (!state.settings.oneClick) {
@@ -1728,6 +1809,13 @@
       investVal = Math.max(1, +(userBalance * (state.investment / 100)).toFixed(2));
     }
 
+    // Max-trade cap (same $1,000 cap as the server): reject before any
+    // request, so an over-cap click never reaches the server or the state.
+    if (investVal > MAX_TRADE_INVESTMENT) {
+      showToast('Error', `Maximum trade amount is $${MAX_TRADE_INVESTMENT.toLocaleString('en-US')}.`, 'loss');
+      return;
+    }
+
     soundContext.playTradePlaced();
 
     fetch('/trade/place', {
@@ -1744,10 +1832,32 @@
         open_price: state.currentPrice,
       }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) {
+          // Non-OK (e.g. 422 validation) may carry a JSON error message, or
+          // no JSON at all — surface the server message as an error and
+          // never fall through to the success path below.
+          return r.json().catch(() => ({}))
+            .then(errData => {
+              throw new Error(errData.error || errData.message || `Trade placement failed (HTTP ${r.status}).`);
+            });
+        }
+        // OK response that is not JSON is also a placement failure.
+        return r.json().catch(() => {
+          throw new Error('Trade placement failed: invalid server response.');
+        });
+      })
       .then(data => {
         if (data.error) {
           showToast('Error', data.error, 'loss');
+          return;
+        }
+
+        // A trade is added ONLY when the server returns a real trade_id.
+        // Without this, a success-shaped response with no trade_id created
+        // a phantom trade (trade_id undefined) with a success toast.
+        if (data.trade_id === undefined || data.trade_id === null) {
+          showToast('Error', 'Trade placement failed: no trade was created. Try again.', 'loss');
           return;
         }
 
@@ -1799,7 +1909,7 @@
           'info'
         );
       })
-      .catch(() => showToast('Error', 'Failed to place trade. Try again.', 'loss'));
+      .catch(err => showToast('Error', (err && err.message) || 'Failed to place trade. Try again.', 'loss'));
   }
 
   el.btnUp?.addEventListener('click', () => placeTrade('up'));
@@ -1811,14 +1921,70 @@
     if (state.pendingPriceLine) {
       try { state.series.removePriceLine(state.pendingPriceLine); } catch (e) {}
     }
+    const linePrice = parseFloat(price) || state.currentPrice;
     state.pendingPriceLine = state.series.createPriceLine({
-      price: parseFloat(price) || state.currentPrice,
+      price: linePrice,
       color: '#026FD3',
       lineWidth: 1,
       lineStyle: LightweightCharts.LineStyle.Dashed,
       axisLabelVisible: true,
       title: 'Order Quote',
     });
+    state._pendingLinePrice = linePrice;
+  }
+
+  function clearPendingPriceLine() {
+    if (state.pendingPriceLine && state.series) {
+      try { state.series.removePriceLine(state.pendingPriceLine); } catch (e) {}
+    }
+    state.pendingPriceLine = null;
+    state._pendingLinePrice = null;
+  }
+
+  // Draw the trigger line for the first pending By Price order on the
+  // current asset; remove it when there is no such order. While the pending
+  // popup is open the typed quote owns the line, so this stays out of the way.
+  function refreshPendingPriceLine() {
+    if (!state.series) return;
+    const popupOpen = document.getElementById('pending-trade-popup')?.style.display === 'flex';
+    if (popupOpen) return;
+    const order = (state.pendingOrders || []).find(o => o.order_type === 'price'
+      && state.selectedAsset && o.asset_id === state.selectedAsset.id);
+    if (!order) {
+      clearPendingPriceLine();
+      return;
+    }
+    if (state.pendingPriceLine && state._pendingLinePrice === Number(order.trigger_price)) return;
+    updatePendingPriceLine(order.trigger_price);
+  }
+
+  function pendingCsrf() {
+    return document.querySelector('meta[name="csrf-token"]')?.content || '';
+  }
+
+  // Same $/% semantics as the main panel: percent = % of the displayed balance.
+  function pendingInvestAmount() {
+    if (pendingInvestMode === 'percent') {
+      const userBalance = parseFloat(el.balanceDisplay?.textContent.replace(/[^0-9.]/g, '') || '10000');
+      return Math.max(1, +(userBalance * (pendingInvestVal / 100)).toFixed(2));
+    }
+    return Math.max(1, pendingInvestVal);
+  }
+
+  function fmtPendingDuration(secs) {
+    secs = Math.max(5, Math.round(secs || 60));
+    if (secs < 60) return secs + 's';
+    if (secs % 60 === 0) return (secs / 60) + 'm';
+    return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+  }
+
+  function toLocalInputValue(date) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}T${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
   window.togglePendingWindow = function(show) {
@@ -1842,19 +2008,28 @@
           updatePendingPriceLine(state.currentPrice);
         }
 
+        // "By Time" tab: default trigger 15 minutes from now.
+        const timeInp = document.getElementById('pending-time-input');
+        if (timeInp) timeInp.value = toLocalInputValue(new Date(Date.now() + 15 * 60 * 1000));
+
         const curTime = document.getElementById('pending-cur-time-lbl');
-        if (curTime) {
-          const now = new Date();
-          curTime.textContent = now.toTimeString().split(' ')[0];
-        }
+        if (curTime) curTime.textContent = new Date().toTimeString().split(' ')[0];
+
+        // Period boxes show the trade duration this order will use.
+        const periodLbl = fmtPendingDuration(state.durationSeconds);
+        const pq = document.getElementById('pending-period-quote');
+        const pt = document.getElementById('pending-period-time');
+        if (pq) pq.textContent = periodLbl;
+        if (pt) pt.textContent = periodLbl;
+
+        refreshPendingOrders();
       } else {
         if (btnUp) btnUp.classList.remove('disabled-pending');
         if (btnDown) btnDown.classList.remove('disabled-pending');
         if (state.activeTrades.length === 0 && overlay) overlay.classList.remove('active');
-        if (state.pendingPriceLine && state.series) {
-          try { state.series.removePriceLine(state.pendingPriceLine); } catch (e) {}
-          state.pendingPriceLine = null;
-        }
+        // Keep the trigger line for a stored pending By Price order on
+        // this asset; otherwise remove it.
+        refreshPendingPriceLine();
       }
     }
   };
@@ -1864,21 +2039,30 @@
   });
 
   window.switchPendingTab = function(tab) {
+    state.pendingTab = tab === 'time' ? 'time' : 'quote';
     const tabQuote = document.getElementById('tab-pending-quote');
     const tabTime = document.getElementById('tab-pending-time');
     const bodyQuote = document.getElementById('pending-body-quote');
     const bodyTime = document.getElementById('pending-body-time');
 
-    if (tab === 'quote') {
+    if (state.pendingTab === 'quote') {
       tabQuote?.classList.add('active');
       tabTime?.classList.remove('active');
       if (bodyQuote) bodyQuote.style.display = 'block';
       if (bodyTime) bodyTime.style.display = 'none';
+      // Re-show the trigger line for the typed quote.
+      const quoteInp = document.getElementById('pending-quote-input');
+      if (quoteInp?.value) updatePendingPriceLine(quoteInp.value);
+      else if (state.currentPrice) updatePendingPriceLine(state.currentPrice);
     } else {
       tabTime?.classList.add('active');
       tabQuote?.classList.remove('active');
       if (bodyTime) bodyTime.style.display = 'block';
       if (bodyQuote) bodyQuote.style.display = 'none';
+      const timeInp = document.getElementById('pending-time-input');
+      if (timeInp && !timeInp.value) timeInp.value = toLocalInputValue(new Date(Date.now() + 15 * 60 * 1000));
+      const curTime = document.getElementById('pending-cur-time-lbl');
+      if (curTime) curTime.textContent = new Date().toTimeString().split(' ')[0];
     }
   };
 
@@ -1903,12 +2087,236 @@
     if (val2) val2.textContent = pendingInvestVal + suffix;
   };
 
+  // Create a REAL pending order (By Price / By Time). This never places an
+  // instant trade: it only stores the order, and the trade is placed
+  // server-side when the trigger fires (cron + check-due hook).
   window.submitPendingOrder = function(dir) {
-    placeTrade(dir);
-    window.togglePendingWindow(false);
-    const chk = document.getElementById('pending-checkbox');
-    if (chk) chk.checked = false;
+    const assetId = state.selectedAsset ? state.selectedAsset.id : 1;
+    const investVal = pendingInvestAmount();
+    if (investVal < 1 || investVal > 1000) {
+      showToast('Invalid investment', 'Investment must be between $1 and $1,000.', 'loss');
+      return;
+    }
+
+    const payload = {
+      asset_id: assetId,
+      direction: dir,
+      investment: investVal,
+      duration_seconds: state.durationSeconds,
+      order_type: state.pendingTab === 'time' ? 'time' : 'price',
+    };
+
+    if (payload.order_type === 'price') {
+      const trigger = parseFloat(document.getElementById('pending-quote-input')?.value);
+      if (!trigger || trigger <= 0) {
+        showToast('Invalid quote', 'Enter a trigger price greater than 0.', 'loss');
+        return;
+      }
+      payload.trigger_price = trigger;
+    } else {
+      const raw = document.getElementById('pending-time-input')?.value;
+      const when = raw ? new Date(raw) : null;
+      if (!when || isNaN(when.getTime()) || when.getTime() <= Date.now()) {
+        showToast('Invalid time', 'Pick a trigger time in the future.', 'loss');
+        return;
+      }
+      payload.trigger_time = when.toISOString();
+    }
+
+    fetch('/pending-orders', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': pendingCsrf(),
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(r => r.json().then(data => ({ ok: r.ok, data })).catch(() => ({ ok: false, data: {} })))
+      .then(({ ok, data }) => {
+        if (!ok || !data.success) {
+          // Laravel validation errors arrive as { message, errors: {...} }.
+          const detail = data.errors ? Object.values(data.errors).flat().join(' ') : '';
+          showToast('Pending order failed', detail || data.message || data.error || 'Could not create the pending order.', 'loss');
+          return;
+        }
+        const whenTxt = payload.order_type === 'price'
+          ? '@ ' + formatPrice(payload.trigger_price)
+          : 'at ' + new Date(payload.trigger_time).toLocaleString();
+        showToast(
+          'Pending order created',
+          `${dir === 'up' ? '↑ Buy' : '↓ Sell'} ${state.selectedAsset?.symbol || ''} ${whenTxt} — $${investVal}`,
+          'info'
+        );
+        window.togglePendingWindow(false);
+        const chk = document.getElementById('pending-checkbox');
+        if (chk) chk.checked = false;
+        refreshPendingOrders();
+      })
+      .catch(() => showToast('Error', 'Failed to create the pending order. Try again.', 'loss'));
   };
+
+  // --- Pending orders list (trades panel) + execution polling ---
+
+  function pendingListContainer() {
+    let box = document.getElementById('pending-orders-list');
+    if (box) return box;
+    const anchor = document.getElementById('trade-list') || document.getElementById('active-trades-container');
+    if (!anchor || !anchor.parentNode) return null;
+    box = document.createElement('div');
+    box.id = 'pending-orders-list';
+    box.className = 'pending-orders-slot';
+    anchor.parentNode.insertBefore(box, anchor);
+    return box;
+  }
+
+  function pendingOrderRowHtml(o) {
+    const dirUp = o.direction === 'up';
+    const trigger = o.order_type === 'time'
+      ? 'at ' + (o.trigger_time ? new Date(o.trigger_time).toLocaleString() : '—')
+      : '@ ' + ((o.trigger_price !== null && o.trigger_price !== undefined) ? formatPrice(o.trigger_price) : '—');
+    return `
+      <div class="qx-deal-card pending-deal">
+        <div class="deal-card-main">
+          <div class="deal-row-top">
+            <div class="deal-sym-wrap">
+              <span class="deal-sym-name">${escapeHtml(o.symbol || '—')}</span>
+            </div>
+            <span class="deal-duration-val">${escapeHtml(fmtPendingDuration(o.duration_seconds))}</span>
+          </div>
+          <div class="deal-row-mid">
+            <div class="deal-invest-dir ${dirUp ? 'win' : 'loss'}">
+              <span class="deal-arrow-icon">${dirUp ? '↑' : '↓'}</span>
+              <span class="deal-invest-val">${Number(o.investment).toFixed(2)} $</span>
+            </div>
+            <span class="deal-payout-val">${escapeHtml((o.order_type === 'time' ? 'By time ' : 'By price ') + trigger)}</span>
+            <button type="button" class="btn-deal-sell" data-cancel-pending-id="${o.id}"><span>Cancel</span></button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderPendingOrders() {
+    const orders = state.pendingOrders || [];
+
+    const countEl = document.getElementById('mob-drawer-pending-count');
+    if (countEl) countEl.textContent = String(orders.length);
+
+    const box = pendingListContainer();
+    if (box) {
+      box.innerHTML = orders.length
+        ? `<div class="pending-orders-header" style="padding:8px 10px 4px;font-size:12px;font-weight:600;color:#5b6b7c;">Pending orders (${orders.length})</div>`
+          + orders.map(pendingOrderRowHtml).join('')
+        : '';
+    }
+
+    const mobList = document.getElementById('mobile-drawer-orders-list');
+    if (mobList) {
+      mobList.innerHTML = orders.length
+        ? orders.map(pendingOrderRowHtml).join('')
+        : '<div class="empty-trades-quotex-box"><p>No pending orders</p></div>';
+    }
+
+    document.querySelectorAll('[data-cancel-pending-id]').forEach(btn => {
+      btn.addEventListener('click', () => cancelPendingOrder(btn.getAttribute('data-cancel-pending-id')));
+    });
+
+    refreshPendingPriceLine();
+  }
+
+  function refreshPendingOrders() {
+    return fetch('/pending-orders', { headers: { 'Accept': 'application/json' } })
+      .then(r => r.json())
+      .then(data => {
+        state.pendingOrders = Array.isArray(data.orders) ? data.orders : (Array.isArray(data) ? data : []);
+        renderPendingOrders();
+        managePendingPolling();
+      })
+      .catch(() => {});
+  }
+
+  function managePendingPolling() {
+    const has = (state.pendingOrders || []).length > 0;
+    if (has && !state.pendingPollTimer) {
+      state.pendingPollTimer = setInterval(checkDuePendingOrders, 5000);
+    } else if (!has && state.pendingPollTimer) {
+      clearInterval(state.pendingPollTimer);
+      state.pendingPollTimer = null;
+    }
+  }
+
+  // Opportunistic execution hook: while pending orders exist, ask the
+  // server every 5s to execute any whose trigger has hit, so orders fire
+  // within seconds instead of waiting for the next cron run.
+  function checkDuePendingOrders() {
+    if (!(state.pendingOrders || []).length) { managePendingPolling(); return; }
+    fetch('/pending-orders/check-due', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': pendingCsrf(),
+      },
+    })
+      .then(r => r.json().catch(() => ({})))
+      .then(data => {
+        (data.executed || []).forEach(t => {
+          showToast(
+            'Pending order executed',
+            `${t.direction === 'up' ? '↑ Buy' : '↓ Sell'} on ${t.symbol} for $${t.investment} — trade opened at ${formatPrice(t.open_price)}`,
+            'info'
+          );
+          if (t.balance !== undefined && el.balanceDisplay) {
+            el.balanceDisplay.textContent = '$' + parseFloat(t.balance).toFixed(2);
+          }
+          // Surface the real server-side trade immediately, in the same
+          // shape doPlaceTrade() uses for an instant trade.
+          const asset = (state.selectedAsset && state.selectedAsset.id === t.asset_id)
+            ? state.selectedAsset
+            : { id: t.asset_id, symbol: t.symbol, payout: 85 };
+          state.activeTrades.push({
+            trade_id: t.trade_id,
+            asset: asset,
+            direction: t.direction,
+            open_price: t.open_price,
+            investment: t.investment,
+            payout: t.payout,
+            duration: t.duration_seconds,
+            expires_at: t.expires_at,
+            candleTime: (state.candles && state.candles.length) ? state.candles[state.candles.length - 1].time : getNowSec(),
+            priceLine: null,
+            beepedCount: 0,
+          });
+          document.getElementById('trade-marker-lines-overlay')?.classList.add('active');
+          renderActiveTrades();
+          updateChartTradesOverlay();
+        });
+        (data.expired || []).forEach(o => {
+          showToast('Pending order expired', `Your ${o.order_type === 'time' ? 'time' : 'price'} order on ${o.symbol} expired without triggering.`, 'info');
+        });
+        refreshPendingOrders();
+      })
+      .catch(() => {});
+  }
+
+  function cancelPendingOrder(id) {
+    fetch('/pending-orders/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      headers: { 'X-CSRF-TOKEN': pendingCsrf() },
+    })
+      .then(r => r.json().then(data => ({ ok: r.ok, data })).catch(() => ({ ok: false, data: {} })))
+      .then(({ ok, data }) => {
+        if (!ok || !data.success) {
+          showToast('Error', data.error || 'Could not cancel the order.', 'loss');
+          return;
+        }
+        showToast('Pending order cancelled', 'The pending order was cancelled.', 'info');
+        refreshPendingOrders();
+      })
+      .catch(() => showToast('Error', 'Failed to cancel the pending order.', 'loss'));
+  }
+  window.cancelPendingOrder = cancelPendingOrder;
+
+  // Load any pending orders created in an earlier session.
+  refreshPendingOrders();
 
   // --- Quotex Exact On-Chart Active Trade Rays & Countdown Pills (Image 1 Exact) ---
   function updateChartTradesOverlay() {
@@ -2520,13 +2928,15 @@
         updateChartTradesOverlay();
 
         const won = data.result === 'win';
-        const tie = data.result === 'tie';
+        const isDraw = data.result === 'draw' || data.result === 'tie';
         if (won) soundContext.playWin();
-        else if (tie) soundContext.playBeep(480, 0.08);
+        else if (isDraw) soundContext.playBeep(480, 0.08);
         else soundContext.playLoss();
 
-        const profitVal = won ? `+${parseFloat(data.payout).toFixed(2)} $` : (tie ? '0.00 $' : `-${parseFloat(trade.investment).toFixed(2)} $`);
-        const resultClass = won ? 'win' : (tie ? 'tie' : 'loss');
+        // Signed profit from the server (payout - investment on a win,
+        // -investment on a loss, 0.00 on a draw) — never the gross payout.
+        const profitVal = settlementProfitText(data, trade);
+        const resultClass = won ? 'win' : (isDraw ? 'tie' : 'loss');
 
         // 1. Show Exact Quotex "RESULT (P/L)" Badge on Chart at expiry candle
         showChartResultBadge(profitVal, resultClass, trade);
@@ -2541,13 +2951,22 @@
         addClosedTrade(trade, data);
       })
       .catch(() => {
-        if (attempt < 3) {
-          setTimeout(() => settleTrade(trade, attempt + 1), 1000 * (attempt + 1));
-        } else {
-          trade.settlementRecovering = true;
+        // Backoff: 1s, 2s, 4s, 8s, then every 30s indefinitely — the
+        // trade is never dropped and never left looking like a normal
+        // running trade. Once the 30s loop starts the row shows
+        // "Settlement pending — retrying" (see timerLabelFor /
+        // sellButtonLabel) and one toast explains the state; later
+        // failures stay silent so the user is not spammed every 30s.
+        // A page reload also recovers: the server settles expired
+        // trades on load (TradeController::index).
+        const persistent = attempt >= 4;
+        if (persistent && !trade.settlementRetrying) {
+          trade.settlementRetrying = true;
           renderActiveTrades();
-          showToast('Settlement Pending', 'Result will sync automatically when connection returns.', 'info');
+          showToast('Settlement Pending', 'Could not reach the server. Your result is safe — retrying automatically.', 'info');
         }
+        const nextDelay = persistent ? 30000 : 1000 * Math.pow(2, attempt);
+        setTimeout(() => settleTrade(trade, attempt + 1), nextDelay);
       });
   }
 
@@ -2651,16 +3070,98 @@
     }
   }
 
-  function earlySellTrade(trade, buyoutVal) {
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
-    if (trade.priceLine && state.series) {
-      try { state.series.removePriceLine(trade.priceLine); } catch (e) {}
-    }
-    document.getElementById(`chart-trade-${trade.trade_id}`)?.remove();
+  // --- Money-math helpers (Workstream B) ---
 
-    const idx = state.activeTrades.indexOf(trade);
-    if (idx > -1) state.activeTrades.splice(idx, 1);
-    updateChartTradesOverlay();
+  // Signed P/L preview for an active trade: +profit (payout -
+  // investment) while the price is on the winning side, -investment
+  // while it is not. Never the gross payout, never "0.00" on a loss.
+  function liveProfitAmount(trade, isWin) {
+    const investment = parseFloat(trade.investment) || 0;
+    return isWin ? (parseFloat(trade.payout) || 0) - investment : -investment;
+  }
+
+  function formatProfit(amount) {
+    const value = parseFloat(amount) || 0;
+    if (value === 0) return '0.00 $';
+    return (value > 0 ? '+' : '-') + Math.abs(value).toFixed(2) + ' $';
+  }
+
+  // Signed profit text from a settlement response: prefers the server's
+  // explicit profit field, falls back to payout - investment / 0 /
+  // -investment so an older-shaped response still displays correctly.
+  function settlementProfitText(resultData, trade) {
+    const result = resultData.result;
+    const isDraw = result === 'draw' || result === 'tie';
+    const profit = (resultData.profit !== undefined && resultData.profit !== null)
+      ? parseFloat(resultData.profit)
+      : (result === 'win'
+        ? (parseFloat(resultData.payout) || 0) - parseFloat(trade.investment)
+        : (isDraw ? 0 : -parseFloat(trade.investment)));
+    return formatProfit(profit);
+  }
+
+  // Market-priced early-sell estimate — mirrors
+  // TradeResultService::calculateEarlySellPayout() on the server:
+  // offer = investment x pWin x (1 + payout%), with pWin a logistic
+  // estimate of the win probability from the signed distance in the
+  // money (in pips) over the time still remaining. The server value is
+  // authoritative at sell time; this is the live preview on the button.
+  function calculateEarlySellValue(trade, currentPrice) {
+    const investment = parseFloat(trade.investment) || 0;
+    const payoutPct = parseFloat(trade.asset?.payout ?? 82) || 0;
+    const grossPayout = investment * (1 + payoutPct / 100);
+    const openPrice = parseFloat(trade.open_price) || 0;
+    const price = (currentPrice !== undefined && currentPrice !== null && !Number.isNaN(parseFloat(currentPrice)))
+      ? parseFloat(currentPrice) : openPrice;
+    const remaining = Math.max(0, Math.ceil((trade.expires_at - Date.now()) / 1000));
+    const pip = Math.pow(10, -pricePrecision(openPrice, trade.asset?.symbol));
+    const signedPips = trade.direction === 'up' ? (price - openPrice) / pip : (openPrice - price) / pip;
+    const sigma = Math.sqrt(Math.max(remaining, 1));
+    const pWin = 1 / (1 + Math.exp(-1.7 * (signedPips / sigma)));
+    const offer = investment * pWin * (1 + payoutPct / 100);
+    return Math.round(Math.min(Math.max(offer, 0), grossPayout) * 100) / 100;
+  }
+
+  // Mirrors OtcPriceEngine::getPrecision() (magnitude rules only; the
+  // server also consults the asset's digits column, so the preview can
+  // differ by a pip-scale factor — the server value is authoritative).
+  function pricePrecision(price, symbol) {
+    const sym = (symbol || '').toUpperCase();
+    if (price >= 500 || /BTC|ETH|GOLD|XAU|SOL|BNB/.test(sym)) return 2;
+    if (price >= 50 || /JPY|PKR|INR|IDR/.test(sym)) return 3;
+    if (price >= 0.1) return 5;
+    return 6;
+  }
+
+  // Row state while a trade is settling: plain "Settling" during the
+  // first attempts, "Settlement pending — retrying" once the client
+  // has entered the 30s backoff loop.
+  function timerLabelFor(trade, timerStr) {
+    if (trade.settlementRetrying) return 'Settlement pending — retrying';
+    if (trade.settlementPending) return 'Settling';
+    return timerStr;
+  }
+
+  function sellButtonLabel(trade) {
+    if (trade.settlementRetrying) return 'Settlement pending — retrying';
+    if (trade.earlySelling) return 'Selling…';
+    if (trade.settlementPending) return 'Settlement pending';
+    return 'Sell now';
+  }
+
+  function sellButtonDisabled(trade) {
+    return !!(trade.settlementPending || trade.earlySelling);
+  }
+
+  function earlySellTrade(trade, buyoutVal) {
+    // Ignore a second tap while a sell is already in flight for this
+    // trade (the button is disabled during the request too).
+    if (trade.earlySelling || trade.settlementPending) return;
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+    // Keep the row (and the price line) visible until the server
+    // confirms the sale — a failed sell must leave the trade in
+    // place with an error, not silently drop it.
+    trade.earlySelling = true;
     renderActiveTrades();
 
     fetch(`/trade/settle/${trade.trade_id}`, {
@@ -2676,18 +3177,30 @@
     })
       .then(r => r.json())
       .then(data => {
-        if (data.error) {
-          showToast('Error', data.error, 'loss');
-          return;
+        if (data.error) throw new Error(data.error);
+        if (trade.priceLine && state.series) {
+          try { state.series.removePriceLine(trade.priceLine); } catch (e) {}
         }
+        document.getElementById(`chart-trade-${trade.trade_id}`)?.remove();
+        const idx = state.activeTrades.indexOf(trade);
+        if (idx > -1) state.activeTrades.splice(idx, 1);
+        updateChartTradesOverlay();
+        renderActiveTrades();
         const paidAmount = Number(data.payout || 0).toFixed(2);
         soundContext.playBeep(600, 0.08);
         showToast('Deal Sold', `Position closed early for ${paidAmount} $`, 'info');
         if (el.balanceDisplay && data.balance !== undefined) {
           el.balanceDisplay.textContent = parseFloat(data.balance).toFixed(2) + ' $';
         }
+        // Record the closed trade in the history list like a normal
+        // settlement (it shows the signed profit, not the buyout).
+        addClosedTrade(trade, data);
       })
-      .catch(() => {});
+      .catch((err) => {
+        trade.earlySelling = false;
+        renderActiveTrades();
+        showToast('Sell failed', (err && err.message) || 'Could not sell this deal. Please try again.', 'loss');
+      });
   }
 
   function renderActiveTrades() {
@@ -2710,11 +3223,14 @@
           const m = Math.floor(remainingSecs / 60);
           const s = remainingSecs % 60;
           const timerStr = m > 0 ? `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `00:${String(s).padStart(2,'0')}`;
-          const timerLabel = trade.settlementPending ? 'Settling' : timerStr;
+          const timerLabel = timerLabelFor(trade, timerStr);
           const isWin = (trade.direction === 'up' && state.currentPrice > trade.open_price) ||
                         (trade.direction === 'down' && state.currentPrice < trade.open_price);
 
-          const sellNowVal = isWin ? Math.max(1, Math.round(trade.investment * 0.15)) : Math.max(1, Math.round(trade.investment * 0.05));
+          // Market-priced early-sell preview (same formula as the
+          // server); the server value is authoritative at sell time.
+          const sellNowVal = calculateEarlySellValue(trade, state.currentPrice);
+          const profitText = formatProfit(liveProfitAmount(trade, isWin));
 
           const item = document.createElement('div');
           item.className = 'qx-deal-card active-deal';
@@ -2735,12 +3251,12 @@
                   <span class="deal-invest-val">${Number(trade.investment).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} $</span>
                 </div>
                 <span class="deal-payout-val ${isWin ? 'profit text-green' : 'loss text-red'}">
-                  ${isWin ? '+' + parseFloat(trade.payout).toFixed(2) + ' $' : '0.00 $'}
+                  ${profitText}
                 </span>
               </div>
-              <button type="button" class="btn-deal-sell" data-trade-id="${trade.trade_id}" ${trade.settlementPending ? 'disabled' : ''}>
-                <span>${trade.settlementPending ? 'Settlement pending' : 'Sell now'}</span>
-                <span>${trade.settlementPending ? '' : sellNowVal.toFixed(2) + ' $'}</span>
+              <button type="button" class="btn-deal-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>
+                <span>${sellButtonLabel(trade)}</span>
+                <span>${sellButtonDisabled(trade) ? '' : sellNowVal.toFixed(2) + ' $'}</span>
               </button>
             </div>
             <div class="deal-card-details">
@@ -2777,10 +3293,12 @@
           const remainingSecs = Math.max(0, Math.ceil((trade.expires_at - Date.now()) / 1000));
           const m = Math.floor(remainingSecs / 60);
           const s = remainingSecs % 60;
-          const timerLabel = trade.settlementPending ? 'Settling' : `00:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+          const timerLabel = timerLabelFor(trade, `00:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
           const isWin = (trade.direction === 'up' && state.currentPrice > trade.open_price) ||
                         (trade.direction === 'down' && state.currentPrice < trade.open_price);
-          const sellNowVal = isWin ? Math.max(1, Math.round(trade.investment * 0.15)) : Math.max(1, Math.round(trade.investment * 0.05));
+          const sellNowVal = calculateEarlySellValue(trade, state.currentPrice);
+          const profitAmt = liveProfitAmount(trade, isWin);
+          const profitText = (profitAmt >= 0 ? '+' : '-') + Math.abs(profitAmt).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' $';
 
           const mobCard = document.createElement('div');
           mobCard.className = 'mobile-deal-card';
@@ -2799,12 +3317,12 @@
                 <span>${Number(trade.investment).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} $</span>
               </div>
               <div class="mob-deal-payout ${isWin ? 'profit text-green' : 'loss text-red'}">
-                ${isWin ? '+' + Number(trade.payout).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' $' : '0.00 $'}
+                ${profitText}
               </div>
             </div>
             <div class="mob-deal-actions">
               <button type="button" class="btn-mob-double" data-trade-id="${trade.trade_id}" ${trade.settlementPending ? 'disabled' : ''}>x2 Double up</button>
-              <button type="button" class="btn-mob-sell" data-trade-id="${trade.trade_id}" ${trade.settlementPending ? 'disabled' : ''}>${trade.settlementPending ? 'Settlement pending' : 'Sell now ' + sellNowVal + ' $'}</button>
+              <button type="button" class="btn-mob-sell" data-trade-id="${trade.trade_id}" ${sellButtonDisabled(trade) ? 'disabled' : ''}>${sellButtonDisabled(trade) ? sellButtonLabel(trade) : 'Sell now ' + sellNowVal + ' $'}</button>
             </div>
           `;
 
@@ -2831,19 +3349,16 @@
 
     state.activeTrades.forEach(trade => {
       const remainingSecs = Math.max(0, Math.ceil((trade.expires_at - Date.now()) / 1000));
-      const compactTimerLabel = trade.settlementPending
-        ? 'Settling'
-        : (remainingSecs >= 3600
+      const compactTimerLabel = timerLabelFor(trade, remainingSecs >= 3600
           ? `${String(Math.floor(remainingSecs / 3600)).padStart(2, '0')}:${String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`
           : `${String(Math.floor(remainingSecs / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`);
-      const fullTimerLabel = trade.settlementPending
-        ? 'Settling'
-        : `${String(Math.floor(remainingSecs / 3600)).padStart(2, '0')}:${String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`;
+      const fullTimerLabel = timerLabelFor(trade,
+        `${String(Math.floor(remainingSecs / 3600)).padStart(2, '0')}:${String(Math.floor((remainingSecs % 3600) / 60)).padStart(2, '0')}:${String(remainingSecs % 60).padStart(2, '0')}`);
 
       const isWin = (trade.direction === 'up' && state.currentPrice > trade.open_price) ||
                     (trade.direction === 'down' && state.currentPrice < trade.open_price);
-      const sellNowVal = isWin ? Math.max(1, Math.round(trade.investment * 0.15)) : Math.max(1, Math.round(trade.investment * 0.05));
-      const payoutText = isWin ? '+' + parseFloat(trade.payout).toFixed(2) + ' $' : '0.00 $';
+      const sellNowVal = calculateEarlySellValue(trade, state.currentPrice);
+      const payoutText = formatProfit(liveProfitAmount(trade, isWin));
 
       document.querySelectorAll(`.active-deal[data-trade-id="${trade.trade_id}"]`).forEach(card => {
         const timerEl = card.querySelector('.deal-timer-val');
@@ -2865,7 +3380,7 @@
         }
 
         const sellButton = card.querySelector('.btn-deal-sell');
-        if (sellButton && !trade.settlementPending) {
+        if (sellButton && !sellButtonDisabled(trade)) {
           const amountEl = sellButton.querySelector('span:last-child');
           if (amountEl) amountEl.textContent = sellNowVal.toFixed(2) + ' $';
         }
@@ -2894,7 +3409,7 @@
         }
 
         const sellButton = card.querySelector('.btn-mob-sell');
-        if (sellButton && !trade.settlementPending) {
+        if (sellButton && !sellButtonDisabled(trade)) {
           sellButton.textContent = 'Sell now ' + sellNowVal + ' $';
         }
       });
@@ -2908,7 +3423,9 @@
 
     const item = document.createElement('div');
     const won = resultData.result === 'win';
-    item.className = `qx-deal-card closed-deal ${won ? 'deal-win' : 'deal-loss'}`;
+    const isDraw = resultData.result === 'draw' || resultData.result === 'tie';
+    // A draw is neither a win nor a loss: no coloured left border.
+    item.className = `qx-deal-card closed-deal ${won ? 'deal-win' : (isDraw ? '' : 'deal-loss')}`;
     const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
     const diff = won ? '+7' : '-6';
     const uuid = 'c9b7aacb-' + Math.random().toString(36).substring(2, 6) + '-435a';
@@ -2926,12 +3443,12 @@
           <span class="deal-duration-val">${durStr}</span>
         </div>
         <div class="deal-row-mid">
-          <div class="deal-invest-dir ${won ? 'win' : 'loss'}">
-            <span class="deal-arrow-icon">${won ? '+' : '-'}</span>
+          <div class="deal-invest-dir ${won ? 'win' : (isDraw ? '' : 'loss')}">
+            <span class="deal-arrow-icon">${won ? '+' : (isDraw ? '=' : '-')}</span>
             <span class="deal-invest-val">${Number(trade.investment).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})} $</span>
           </div>
-          <span class="deal-payout-val ${won ? 'profit text-green' : 'loss text-red'}">
-            ${won ? '+' + parseFloat(resultData.payout).toFixed(2) + ' $' : '0.00 $'}
+          <span class="deal-payout-val ${won ? 'profit text-green' : (isDraw ? '' : 'loss text-red')}">
+            ${settlementProfitText(resultData, trade)}
           </span>
         </div>
       </div>
@@ -2980,11 +3497,14 @@
       document.querySelectorAll('.trades-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       if (target === 'active') {
-        el.activeTradesContainer.style.display = 'block';
-        el.closedTradesContainer.style.display = 'none';
+        if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'block';
+        // Closed trades live in #trade-list (el.tradeList). The old code
+        // targeted #closed-trades-container, which does not exist (null)
+        // and would throw on a tab click.
+        if (el.tradeList) el.tradeList.style.display = 'none';
       } else {
-        el.activeTradesContainer.style.display = 'none';
-        el.closedTradesContainer.style.display = 'block';
+        if (el.activeTradesContainer) el.activeTradesContainer.style.display = 'none';
+        if (el.tradeList) el.tradeList.style.display = 'block';
       }
     });
   });
@@ -3417,7 +3937,7 @@
   });
 
   document.getElementById('btn-pending-trade')?.addEventListener('click', () => {
-    showToast('Pending Trade', 'Order book & pending orders queue active', 'info');
+    window.togglePendingWindow(true);
   });
 
   // --- Global Window Helpers for More, Settings, and Account Popover ---

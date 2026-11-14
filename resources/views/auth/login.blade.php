@@ -83,6 +83,38 @@
 
               <!-- Tab 1: Login Form (Active) -->
               <div id="tab-1" class="tabs__item active">
+                @if($showTwoFactor ?? false)
+                {{-- Two-step verification (email code): the password was
+                     already verified; sign-in only completes with the
+                     correct 6-digit code sent to the user email. --}}
+                @if($twoFactorResent ?? false)
+                  <div class="auth-alerts"><div>A new verification code has been sent to your email.</div></div>
+                @endif
+                <form action="{{ route('login') }}" method="post" dir="auto">
+                  @csrf
+                  <input type="hidden" name="email" value="{{ $twoFactorEmail ?? old('email') }}">
+                  <div class="modal-sign__input">
+                    <label class="modal-sign__input-label">Verification code</label>
+                    <input type="text" name="verification_code" value="" class="modal-sign__input-value" required="1" autofocus inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code">
+                    <div class="modal-sign__input-tooltip">
+                      We sent a 6-digit verification code to {{ $twoFactorEmail ?? 'your email' }}. Enter it to finish signing in. The code expires in 10 minutes.
+                    </div>
+                  </div>
+
+                  <button class="modal-sign__block-button" type="submit">
+                    <div>Verify and sign in</div>
+                  </button>
+                </form>
+
+                <form action="{{ route('login') }}" method="post" dir="auto" style="margin-top:12px;">
+                  @csrf
+                  <input type="hidden" name="email" value="{{ $twoFactorEmail ?? old('email') }}">
+                  <input type="hidden" name="resend_code" value="1">
+                  <button class="modal-sign__block-button" type="submit" style="background:transparent; border:1px solid #2b3a4a;">
+                    <div>Resend code</div>
+                  </button>
+                </form>
+                @else
                 <form action="{{ route('login') }}" method="post" dir="auto">
                   @csrf
                   <div class="modal-sign__input">
@@ -128,6 +160,7 @@
                     </span>
                   </div>
                 </div>
+                @endif
               </div>
             </div>
           </div>

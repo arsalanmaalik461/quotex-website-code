@@ -578,6 +578,21 @@ hr.form-divider {
     </div>
   @endif
 
+  {{-- Verification gate: withdrawals are blocked server-side until the
+       account is KYC-verified and the email is verified. This notice
+       explains why; the Confirm button is disabled while blocked. --}}
+  @if(!($isVerified ?? true) || !($emailVerified ?? true))
+    <div style="background: rgba(255, 171, 0, 0.12); border: 1px solid rgba(255, 171, 0, 0.35); color: #ffe57f; padding: 12px 18px; border-radius: 6px; margin-bottom: 20px;">
+      <strong style="color: #ffab00;">Withdrawals are unavailable until your account is verified.</strong>
+      @if(!($isVerified ?? true))
+        <div style="margin-top: 6px;">Please complete identity verification first: <a href="{{ route('kyc.index') }}" style="color: #ffab00; font-weight: 600;">Verify your identity (KYC)</a>.</div>
+      @endif
+      @if(!($emailVerified ?? true))
+        <div style="margin-top: 6px;">Please verify your email address first — use the Resend button in the Email row on your <a href="{{ route('profile') }}" style="color: #ffab00; font-weight: 600;">Profile</a> page.</div>
+      @endif
+    </div>
+  @endif
+
   <div class="page__sections-row">
     
     <!-- LEFT COLUMN: Account, Withdrawal Form, Latest Requests -->
@@ -708,9 +723,25 @@ hr.form-divider {
               </div>
             </div>
 
+            <!-- Withdrawal 2FA: shown after the first submit, when a
+                 confirmation code has been emailed to the user. -->
+            @if(session('withdrawal_code_required'))
+            <div class="form__row">
+              <div class="form__control">
+                <label class="input-control-cabinet input-control-cabinet--text">
+                  <span class="input-control-cabinet__label">Confirmation code</span>
+                  <div class="input-control-cabinet__input-wrap">
+                    <input class="input-control-cabinet__input" type="text" name="verification_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code sent to your email" required>
+                  </div>
+                </label>
+                <p style="font-size:12px; color:#8b96a8; margin:6px 0 0;">A 6-digit confirmation code was sent to your email. Enter it above and press Confirm again. The code expires in 10 minutes.</p>
+              </div>
+            </div>
+            @endif
+
             <!-- Submit Button -->
             <div class="withdrawal-page__submit form__row">
-              <button type="submit" class="button button--primary form-submit">
+              <button type="submit" class="button button--primary form-submit" @disabled(!($isVerified ?? true) || !($emailVerified ?? true)) @if(!($isVerified ?? true) || !($emailVerified ?? true)) style="opacity:.5; cursor:not-allowed;" @endif>
                 <span>Confirm</span>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
               </button>
@@ -725,7 +756,7 @@ hr.form-divider {
         <div class="content-section grow-full">
           <div class="content-section__head">
             <span>Some of your latest requests:</span>
-            <a class="content-section__head-action" href="{{ route('history') }}">
+            <a class="content-section__head-action" href="{{ route('transactions.index') }}">
               <span>All financial history</span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
             </a>
@@ -742,8 +773,8 @@ hr.form-divider {
                 @endphp
                 <div class="row">
                   <div class="col-meta">
-                    <span class="req-id">{{ $tx->id ? (84000000 + $tx->id) : '84353524' }}</span>
-                    <span class="req-date">{{ $tx->created_at ? $tx->created_at->format('d.m.Y H:i:s') : '10.04.2025 06:37:16' }}</span>
+                    <span class="req-id">{{ 84000000 + $tx->id }}</span>
+                    <span class="req-date">{{ $tx->created_at->format('d.m.Y H:i:s') }}</span>
                   </div>
                   <div class="col-status">
                     <div class="status-pill {{ $statusClass }}">
@@ -751,74 +782,25 @@ hr.form-divider {
                       <span>{{ $statusLabel }}</span>
                     </div>
                     <div class="status-desc">
-                      The withdrawal is currently being processed on the side of the financial operator. Please wait - the funds should be received within 48 hours.
+                      @if($isSuccess)
+                        The withdrawal has been processed.
+                      @elseif($isFailed)
+                        This withdrawal was rejected.
+                      @else
+                        The withdrawal is currently being processed on the side of the financial operator. Please wait - the funds should be received within 48 hours.
+                      @endif
                     </div>
                   </div>
                   <div class="col-amount">
-                    <span class="req-method">{{ $tx->method ?? 'Binance Pay' }}</span>
-                    <b class="req-val">+{{ number_format($tx->amount, 2) }} $</b>
+                    <span class="req-method">{{ $tx->method }}</span>
+                    <b class="req-val">-{{ number_format($tx->amount, 2) }} $</b>
                   </div>
                 </div>
               @endforeach
             @else
-              {{-- Exact Default Sample History matching Quotex screenshot --}}
               <div class="row">
-                <div class="col-meta">
-                  <span class="req-id">84353524</span>
-                  <span class="req-date">10.04.2025 06:37:16</span>
-                </div>
-                <div class="col-status">
-                  <div class="status-pill success">
-                    <span class="status-dot"></span>
-                    <span>Successed</span>
-                  </div>
-                  <div class="status-desc">
-                    The withdrawal is currently being processed on the side of the financial operator. Please wait - the funds should be received within 48 hours.
-                  </div>
-                </div>
-                <div class="col-amount">
-                  <span class="req-method">Binance Pay</span>
-                  <b class="req-val">+60.00 $</b>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="col-meta">
-                  <span class="req-id">84353478</span>
-                  <span class="req-date">10.04.2025 06:36:41</span>
-                </div>
-                <div class="col-status">
-                  <div class="status-pill failed">
-                    <span class="status-dot"></span>
-                    <span>Failed</span>
-                  </div>
-                  <div class="status-desc">
-                    The withdrawal is currently being processed on the side of the financial operator. Please wait - the funds should be received within 48 hours.
-                  </div>
-                </div>
-                <div class="col-amount">
-                  <span class="req-method">Binance Pay</span>
-                  <b class="req-val">+10.00 $</b>
-                </div>
-              </div>
-
-              <div class="row">
-                <div class="col-meta">
-                  <span class="req-id">83940760</span>
-                  <span class="req-date">05.04.2025 09:13:47</span>
-                </div>
-                <div class="col-status">
-                  <div class="status-pill success">
-                    <span class="status-dot"></span>
-                    <span>Successed</span>
-                  </div>
-                  <div class="status-desc">
-                    The withdrawal is currently being processed on the side of the financial operator. Please wait - the funds should be received within 48 hours.
-                  </div>
-                </div>
-                <div class="col-amount">
-                  <span class="req-method">Binance Pay</span>
-                  <b class="req-val">+10.00 $</b>
+                <div style="padding: 24px 16px; text-align: center; color: #8b95a5; width: 100%;">
+                  You don't have any withdrawal requests yet.
                 </div>
               </div>
             @endif

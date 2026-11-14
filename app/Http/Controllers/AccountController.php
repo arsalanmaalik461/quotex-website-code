@@ -10,6 +10,8 @@ use App\Models\PaymentMethod;
 use App\Models\Tournament;
 use App\Models\PromoCode;
 use App\Models\User;
+use App\Services\TradeResultService;
+use App\Services\VerificationCodeService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -32,10 +34,20 @@ class AccountController extends Controller
         return Auth::user();
     }
 
-    public function deposit()
+    public function deposit(Request $request)
     {
         $user = $this->ensureAuth();
 
+        // A promo code carried in from the Market page (?promo=CODE) or the
+        // 50% banner: validate it up front so the page can show the bonus
+        // the user will get (or a clear error) before they deposit.
+        $appliedPromo = null;
+        $promoError = null;
+        if ($request->filled('promo')) {
+            $resolved = $this->resolveDepositPromo($request->query('promo'));
+            $appliedPromo = $resolved['promo'];
+            $promoError = $resolved['error'];
+        }
         Transaction::where('user_id', $user->id)
             ->where('type', 'deposit')
             ->where('provider', 'lgpay')
@@ -109,7 +121,7 @@ class AccountController extends Controller
             ->limit(5)
             ->get();
 
-        return view('account.deposit', compact('user', 'methods', 'lgPayMethods', 'paymentCategories', 'recentDeposits'));
+        return view('account.deposit', compact('user', 'methods', 'lgPayMethods', 'paymentCategories', 'recentDeposits', 'appliedPromo', 'promoError'));
     }
 
     public function processDeposit(Request $request)
@@ -121,6 +133,7 @@ class AccountController extends Controller
             'payment_category_id' => 'nullable|integer',
             'transaction_id'    => 'nullable|string|max:255',
             'proof_image'       => 'nullable|image|mimes:jpeg,png,jpg,webp,heic|max:10240',
+            'promo_code'        => 'nullable|string|max:40',
         ]);
 
         // At least one of transaction_id OR proof_image is strictly required
@@ -173,6 +186,22 @@ class AccountController extends Controller
             return back()->withInput()->withErrors(['amount' => 'Amount is outside the allowed limit for this method.']);
         }
 
+        // Promo code (typed on this page or carried in via ?promo=): a code
+        // that is invalid, expired, not a deposit bonus, or below its
+        // minimum deposit is a hard error — the deposit is not created and
+        // nothing is credited.
+        $promoBonus = 0.0;
+        $appliedPromo = null;
+        $promoCodeInput = strtoupper(trim((string) $request->input('promo_code', '')));
+        if ($promoCodeInput !== '') {
+            $resolved = $this->resolveDepositPromo($promoCodeInput, $amount);
+            if ($resolved['error'] !== null) {
+                return back()->withInput()->withErrors(['promo_code' => $resolved['error']]);
+            }
+            $appliedPromo = $resolved['promo'];
+            $promoBonus = $resolved['bonus'];
+        }
+
         $currency = $paymentMethod->currency;
         $conversionRate = (float) $paymentMethod->conversion_rate;
         $convertedAmount = round($amount * $conversionRate, 2);
@@ -190,7 +219,7 @@ class AccountController extends Controller
             $proofPath = 'uploads/deposits/' . $filename;
         }
 
-        Transaction::create([
+        $deposit = Transaction::create([
             'user_id'           => $user->id,
             'account_type'      => 'live',
             'type'              => 'deposit',
@@ -206,13 +235,65 @@ class AccountController extends Controller
             'notes'             => 'Awaiting admin verification.',
         ]);
 
-        return redirect()->route('deposit')->with('success', 'Deposit request of $' . number_format($amount, 2) . ' submitted successfully! It is pending admin review and will be added to your balance once verified.');
+        // Credit the promo bonus to the same (live) account as the deposit
+        // and record it as its own 'bonus' transaction. This runs in its
+        // own try/catch so a bonus failure (e.g. the 'bonus' transaction
+        // type not yet enabled in the DB enum) never blocks the deposit
+        // itself; the user is told instead.
+        // NOTE: the deposit itself is still pending admin review while the
+        // bonus is credited immediately. If the deposit is later rejected
+        // the bonus stays in the balance unless an admin reverses the
+        // linked bonus row (see its notes for the deposit id). The correct
+        // long-term placement is to credit the bonus when the deposit is
+        // approved (AdminTransactionController::approveTransaction), which
+        // is admin code and out of scope for this change.
+        $bonusFailed = false;
+        if ($appliedPromo !== null && $promoBonus > 0) {
+            try {
+                DB::transaction(function () use ($user, $appliedPromo, $promoBonus, $deposit) {
+                    $lockedUser = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
+                    $lockedUser->live_balance = Money::add($lockedUser->live_balance, $promoBonus);
+                    $lockedUser->save();
+
+                    Transaction::create([
+                        'user_id'      => $user->id,
+                        'account_type' => 'live',
+                        'type'         => 'bonus',
+                        'amount'       => $promoBonus,
+                        'method'       => 'Promo code ' . $appliedPromo->code,
+                        'status'       => 'approved',
+                        'processed_at' => now(),
+                        'notes'        => 'Promo bonus ' . $appliedPromo->code . ' (' . $appliedPromo->formatted_name . ') for deposit #' . $deposit->id . ' of $' . number_format((float) $deposit->amount, 2) . '.',
+                    ]);
+                });
+            } catch (\Throwable $e) {
+                $bonusFailed = true;
+                Log::error('Promo bonus credit failed for deposit #' . $deposit->id . ': ' . $e->getMessage(), [
+                    'user_id'    => $user->id,
+                    'promo_code' => $appliedPromo->code,
+                    'bonus'      => $promoBonus,
+                ]);
+            }
+        }
+
+        $successMessage = 'Deposit request of $' . number_format($amount, 2) . ' submitted successfully! It is pending admin review and will be added to your balance once verified.';
+        if ($appliedPromo !== null && $promoBonus > 0 && !$bonusFailed) {
+            $successMessage .= ' Promo bonus of $' . number_format($promoBonus, 2) . ' from code ' . $appliedPromo->code . ' has been credited to your live balance.';
+        }
+
+        $redirect = redirect()->route('deposit')->with('success', $successMessage);
+        if ($bonusFailed) {
+            $redirect->with('warning', 'Your deposit was submitted, but the $' . number_format($promoBonus, 2) . ' bonus from promo code ' . $appliedPromo->code . ' could not be credited due to a system issue. Please contact support and mention promo code ' . $appliedPromo->code . ' and deposit #' . $deposit->id . '.');
+        }
+
+        return $redirect;
     }
 
     public function withdrawal()
     {
         $user = $this->ensureAuth();
         $isVerified = $user->isKycVerified();
+        $emailVerified = (bool) ($user->email_verified || $user->email_verified_at);
 
         $methods = collect([]);
         if (Schema::hasTable('payment_methods')) {
@@ -228,22 +309,56 @@ class AccountController extends Controller
             ->limit(10)
             ->get();
 
-        return view('account.withdrawal', compact('user', 'methods', 'recentTransactions', 'isVerified'));
+        return view('account.withdrawal', compact('user', 'methods', 'recentTransactions', 'isVerified', 'emailVerified'));
     }
 
     public function processWithdrawal(Request $request)
     {
-        $this->ensureAuth();
+        $user = $this->ensureAuth();
+
+        // KYC gate (server-side): no withdrawal until identity is
+        // verified. The page also shows a notice, but this is the
+        // authoritative check — it cannot be bypassed from the client.
+        if (!$user->isKycVerified()) {
+            return back()->withInput()->withErrors(['kyc' => 'Withdrawals are available after identity verification. Please complete verification on the KYC page (Verification section in your Profile) first.']);
+        }
+
+        // Email gate (server-side): the account email must be verified.
+        if (!($user->email_verified || $user->email_verified_at)) {
+            return back()->withInput()->withErrors(['email' => 'Please verify your email address before withdrawing. You can resend the verification link from the Resend button on your Profile page.']);
+        }
 
         $validated = $request->validate([
-            'amount'       => 'required|numeric|min:10',
-            'method'       => 'required|string',
-            'purse'        => 'nullable|string|max:255',
-            'destination'  => 'nullable|string|max:255',
-            'first_name'   => 'nullable|string|max:100',
-            'last_name'    => 'nullable|string|max:100',
-            'receive_type' => 'nullable|string|max:100',
+            'amount'            => 'required|numeric|min:10',
+            'method'            => 'required|string',
+            'purse'             => 'nullable|string|max:255',
+            'destination'       => 'nullable|string|max:255',
+            'first_name'        => 'nullable|string|max:100',
+            'last_name'         => 'nullable|string|max:100',
+            'receive_type'      => 'nullable|string|max:100',
+            'verification_code' => 'nullable|string|max:10',
         ]);
+
+        // Withdrawal 2FA: when enabled, the same emailed 6-digit code
+        // used at sign-in must accompany the request. First submit
+        // (no code) issues + emails the code and asks for it; the
+        // withdrawal is only created once a correct, unexpired code
+        // is submitted with the request.
+        if ($user->withdrawal_2fa) {
+            if (!$request->filled('verification_code')) {
+                $code = VerificationCodeService::issue($user, VerificationCodeService::PURPOSE_WITHDRAWAL);
+                if (!VerificationCodeService::sendCodeEmail($user, VerificationCodeService::PURPOSE_WITHDRAWAL, $code)) {
+                    return back()->withInput()->withErrors(['verification_code' => 'We could not send the confirmation code to your email. Please try again.']);
+                }
+
+                return back()->withInput()->with('withdrawal_code_required', true);
+            }
+
+            if (!VerificationCodeService::verify($user, VerificationCodeService::PURPOSE_WITHDRAWAL, (string) $request->verification_code)) {
+                return back()->withInput()->with('withdrawal_code_required', true)
+                    ->withErrors(['verification_code' => 'The confirmation code is incorrect or has expired.']);
+            }
+        }
 
         $destination = $request->purse ?: $request->destination;
         if (empty($destination)) {
@@ -335,7 +450,11 @@ class AccountController extends Controller
                         $t->opened_at ? $t->opened_at->format('Y-m-d H:i:s') : '',
                         $t->closed_at ? $t->closed_at->format('Y-m-d H:i:s') : '',
                         strtoupper($t->result),
-                        $t->payout . '$'
+                        // Signed P/L, not the gross payout: win =
+                        // payout - investment, loss = -investment (or
+                        // buyout - investment for an early sell),
+                        // draw = 0.00.
+                        number_format(TradeResultService::settledProfit($t), 2) . '$'
                     ]);
                 }
                 fclose($file);
@@ -346,6 +465,23 @@ class AccountController extends Controller
         $trades = $query->latest('opened_at')->paginate(10)->withQueryString();
 
         return view('account.history', compact('trades', 'user', 'accountType', 'startDate', 'endDate'));
+    }
+
+    /**
+     * Unified money history: every transaction type (deposit, withdrawal,
+     * promo bonus, tournament entry, ...) in one list, newest first.
+     * Money facts come from the transactions table only — no sample rows.
+     */
+    public function transactions(Request $request)
+    {
+        $user = $this->ensureAuth();
+
+        $transactions = Transaction::where('user_id', $user->id)
+            ->latest()
+            ->paginate(15)
+            ->withQueryString();
+
+        return view('account.transactions', compact('user', 'transactions'));
     }
 
     public function pendingTrades(Request $request)
@@ -440,6 +576,87 @@ class AccountController extends Controller
         return view('account.market', compact('user', 'activePromos'));
     }
 
+    /**
+     * Validate a promo code for use on a deposit.
+     *
+     * Returns ['promo' => ?PromoCode, 'error' => ?string, 'bonus' => float].
+     * When $amount is given, the bonus for that deposit is computed and the
+     * code's minimum deposit is enforced; with no amount the bonus is 0
+     * (it cannot be computed yet) but the code itself is still validated.
+     *
+     * NOTE: the promo_codes table has no max_uses / uses_count columns, so
+     * per-code usage limits cannot be enforced here. If a usage limit is
+     * wanted later, add those columns via a migration first.
+     */
+    private function resolveDepositPromo(?string $code, ?float $amount = null): array
+    {
+        $code = strtoupper(trim((string) $code));
+
+        if ($code === '') {
+            return ['promo' => null, 'error' => null, 'bonus' => 0.0];
+        }
+
+        if (!Schema::hasTable('promo_codes')) {
+            return ['promo' => null, 'error' => 'Promo codes are not available right now.', 'bonus' => 0.0];
+        }
+
+        $promo = PromoCode::where('code', $code)->first();
+
+        if (!$promo) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" is invalid.', 'bonus' => 0.0];
+        }
+
+        if (!$promo->is_active) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" is no longer active.', 'bonus' => 0.0];
+        }
+
+        if (!$promo->is_unlimited && $promo->expires_at && $promo->expires_at->isPast()) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" has expired.', 'bonus' => 0.0];
+        }
+
+        if (!in_array($promo->category, ['deposit_bonus', 'balance_bonus'], true)) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" is not a deposit bonus code and cannot be used on a deposit.', 'bonus' => 0.0];
+        }
+
+        if (!in_array($promo->reward_type, ['percentage', 'fixed_amount'], true)) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" cannot be applied to a deposit.', 'bonus' => 0.0];
+        }
+
+        if ($amount !== null && $promo->min_deposit !== null && $amount < (float) $promo->min_deposit) {
+            return ['promo' => null, 'error' => 'Promo code "' . $code . '" requires a minimum deposit of $' . number_format((float) $promo->min_deposit, 2) . '.', 'bonus' => 0.0];
+        }
+
+        $bonus = 0.0;
+        if ($amount !== null && $amount > 0) {
+            $bonus = $promo->reward_type === 'percentage'
+                ? round($amount * (float) $promo->reward_value / 100, 2)
+                : round((float) $promo->reward_value, 2);
+        }
+
+        return ['promo' => $promo, 'error' => null, 'bonus' => $bonus];
+    }
+
+    /**
+     * Human-readable description of what a deposit promo code gives.
+     */
+    private function depositPromoBonusText(PromoCode $promo): string
+    {
+        if ($promo->reward_type === 'percentage') {
+            $value = rtrim(rtrim(number_format((float) $promo->reward_value, 2, '.', ''), '0'), '.');
+            $text = 'You will get a ' . $value . '% bonus on your deposit.';
+        } elseif ($promo->reward_type === 'fixed_amount') {
+            $text = 'You will get a $' . number_format((float) $promo->reward_value, 2) . ' bonus on your deposit.';
+        } else {
+            $text = 'Bonus: ' . $promo->formatted_name . '.';
+        }
+
+        if ($promo->min_deposit !== null) {
+            $text .= ' Minimum deposit $' . number_format((float) $promo->min_deposit, 2) . '.';
+        }
+
+        return $text;
+    }
+
     public function applyPromo(Request $request)
     {
         $this->ensureAuth();
@@ -452,24 +669,19 @@ class AccountController extends Controller
             ], 422);
         }
 
-        if (!Schema::hasTable('promo_codes')) {
+        $resolved = $this->resolveDepositPromo($code);
+        if ($resolved['error'] !== null) {
             return response()->json([
                 'success' => false,
-                'message' => 'Promo code not found or has expired.',
+                'message' => $resolved['error'],
             ], 404);
         }
 
-        $promo = PromoCode::active()->where('code', $code)->first();
-        if (!$promo) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Promo code "' . $code . '" is invalid or has expired.',
-            ], 404);
-        }
+        $promo = $resolved['promo'];
 
         return response()->json([
             'success' => true,
-            'message' => 'Promo code "' . $promo->code . '" activated successfully! (' . $promo->formatted_name . ')',
+            'message' => 'Promo code "' . $promo->code . '" activated! ' . $this->depositPromoBonusText($promo) . ' Continue to deposit to claim it.',
             'redirect' => route('deposit', ['promo' => $promo->code]),
             'promo' => [
                 'code' => $promo->code,
@@ -598,22 +810,39 @@ class AccountController extends Controller
         $user = $this->ensureAuth();
 
         $request->validate([
-            'name'    => 'nullable|string|max:255',
-            'country' => 'nullable|string',
-            'last_name' => 'nullable|string|max:255',
-            'birthday' => 'nullable|date',
-            'address' => 'nullable|string|max:255',
-            'nickname' => 'nullable|string|max:255',
+            'name'       => 'nullable|string|max:255',
+            'country'    => 'nullable|string',
+            'last_name'  => 'nullable|string|max:255',
+            'birthday'   => 'nullable|date',
+            'address'    => 'nullable|string|max:255',
+            'nickname'   => 'nullable|string|max:255',
+            'old_password' => 'nullable|string',
+            'password'   => 'nullable|min:6|confirmed',
         ]);
 
-        $update = [
-            'name'    => $request->name ?? $user->name,
-            'country' => $request->country ?? $user->country,
-            'last_name' => $request->last_name,
-            'birthday' => $request->birthday,
-            'address' => $request->address,
-            'nickname' => $request->nickname ? ltrim($request->nickname, '#') : null,
-        ];
+        // Password change: the CURRENT password must be verified first.
+        // A wrong old password rejects the change and nothing is saved.
+        $changingPassword = $request->filled('password');
+        if ($changingPassword) {
+            if (!$request->filled('old_password') || !Hash::check($request->old_password, $user->password)) {
+                return back()->withErrors(['old_password' => 'The current password is incorrect.']);
+            }
+        }
+
+        // Only touch profile fields the submitted form actually
+        // contained. The password form posts no profile fields at all,
+        // so changing a password can no longer blank nickname,
+        // last name, birthday or address (the old code wrote null for
+        // every field the form did not send).
+        $update = [];
+        foreach (['name', 'country', 'last_name', 'birthday', 'address'] as $field) {
+            if ($request->has($field)) {
+                $update[$field] = $request->input($field);
+            }
+        }
+        if ($request->has('nickname')) {
+            $update['nickname'] = $request->nickname ? ltrim($request->nickname, '#') : null;
+        }
 
         if ($request->hasFile('file')) {
             $file = $request->file('file');
@@ -622,11 +851,12 @@ class AccountController extends Controller
             $update['avatar'] = 'uploads/avatars/' . $fileName;
         }
 
-        $user->update($update);
+        if ($changingPassword) {
+            $update['password'] = Hash::make($request->password);
+        }
 
-        if ($request->filled('password')) {
-            $request->validate(['password' => 'min:6|confirmed']);
-            $user->update(['password' => Hash::make($request->password)]);
+        if (!empty($update)) {
+            $user->update($update);
         }
 
         return back()->with('success', 'Profile updated successfully.');

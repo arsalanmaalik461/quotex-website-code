@@ -6,6 +6,7 @@ use App\Http\Controllers\HomeController;
 use App\Http\Controllers\TradeController;
 use App\Http\Controllers\AccountController;
 use App\Http\Controllers\KycController;
+use App\Http\Controllers\PendingOrderController;
 use App\Http\Controllers\LGPayController;
 use App\Http\Controllers\TournamentRegistrationController;
 use Illuminate\Support\Facades\Route;
@@ -43,6 +44,15 @@ Route::middleware('auth')->group(function () {
     Route::post('/trade/settle/{trade}', [TradeController::class, 'settleTrade'])->name('trade.settle');
     Route::post('/trade/switch-account', [TradeController::class, 'switchAccount'])->name('trade.switch');
     Route::post('/trade/refill-demo', [TradeController::class, 'refillDemo'])->name('trade.refill');
+
+    // Pending orders (real By Price / By Time orders — Workstream D).
+    // Creating an order only records the intent; execution happens via
+    // `pending:execute` (host cron, every minute) or the opportunistic
+    // check-due hook below, through the normal trade placement path.
+    Route::post('/pending-orders', [PendingOrderController::class, 'store'])->name('pending-orders.store');
+    Route::get('/pending-orders', [PendingOrderController::class, 'index'])->name('pending-orders.index');
+    Route::post('/pending-orders/check-due', [PendingOrderController::class, 'checkDue'])->name('pending-orders.check-due');
+    Route::delete('/pending-orders/{pendingOrder}', [PendingOrderController::class, 'cancel'])->name('pending-orders.cancel');
 });
 Route::get('/trade/price-data', [TradeController::class, 'priceData'])->name('trade.price');
 Route::get('/trade/signals', [\App\Http\Controllers\SignalController::class, 'getSignals'])->name('trade.signals');
@@ -64,6 +74,10 @@ Route::middleware('auth')->group(function () {
     Route::get('/en/trades', [AccountController::class, 'history'])->name('trades.en');
     Route::get('/pending-trades', [AccountController::class, 'pendingTrades'])->name('pending-trades');
     Route::get('/en/pending-trades', [AccountController::class, 'pendingTrades'])->name('pending-trades.en');
+
+    // Unified money history (all transaction types in one list: deposits,
+    // withdrawals, promo bonuses, tournament entries, ...)
+    Route::get('/transactions', [AccountController::class, 'transactions'])->name('transactions.index');
 
     Route::get('/profile', [AccountController::class, 'profile'])->name('profile');
     Route::get('/settings', [AccountController::class, 'profile'])->name('settings');

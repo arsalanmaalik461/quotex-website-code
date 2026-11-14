@@ -566,6 +566,25 @@ body {
         </div>
       @endif
 
+      {{-- Promo code carried in via ?promo= (Market page / 50% banner) --}}
+      @if(!empty($appliedPromo))
+        <div style="background: rgba(0, 200, 83, 0.12); border: 1px solid rgba(0, 200, 83, 0.3); color: #b9f6ca; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;">
+          🎁 Promo code <strong>{{ $appliedPromo->code }}</strong> applied — you will get a {{ $appliedPromo->reward_type === 'percentage' ? rtrim(rtrim(number_format((float) $appliedPromo->reward_value, 2, '.', ''), '0'), '.') . '% bonus' : '$' . number_format((float) $appliedPromo->reward_value, 2) . ' bonus' }} on this deposit{{ $appliedPromo->min_deposit ? ' (minimum deposit $' . number_format((float) $appliedPromo->min_deposit, 2) . ')' : '' }}. The bonus is credited to your live balance when you submit.
+        </div>
+      @endif
+
+      @if(!empty($promoError))
+        <div style="background: rgba(255, 82, 82, 0.12); border: 1px solid rgba(255, 82, 82, 0.3); color: #ff8a80; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;">
+          <strong>Promo code:</strong> {{ $promoError }} You can still deposit without a code.
+        </div>
+      @endif
+
+      @if(session('warning'))
+        <div style="background: rgba(255, 171, 0, 0.12); border: 1px solid rgba(255, 171, 0, 0.35); color: #ffd54f; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;">
+          {{ session('warning') }}
+        </div>
+      @endif
+
       {{-- Country Search Box --}}
       <div class="P4CNJ ey44c nFw04">
         <div class="NJcSD _eiRd">
@@ -723,6 +742,15 @@ body {
         </div>
       </div>
 
+      {{-- Promo code (optional): entered here, or pre-filled from ?promo= --}}
+      <div style="margin-bottom:16px;">
+        <label style="font-size:13px; font-weight:600; color:#cfd8dc; display:block; margin-bottom:6px;">
+          Promo code (optional)
+        </label>
+        <input type="text" id="deposit-promo-input" name="promo_code" class="field-input-qx" placeholder="e.g. WELCOME50" value="{{ old('promo_code', $appliedPromo->code ?? '') }}" maxlength="40" autocomplete="off" style="text-transform:uppercase;" oninput="updatePromoPreview()">
+        <div id="promo-preview" style="display:none; margin-top:6px; font-size:12.5px; font-weight:600;" @if(!empty($appliedPromo)) data-code="{{ $appliedPromo->code }}" data-reward-type="{{ $appliedPromo->reward_type }}" data-reward-value="{{ $appliedPromo->reward_value }}" data-min-deposit="{{ $appliedPromo->min_deposit ?? 0 }}" @endif></div>
+      </div>
+
       {{-- Payment Verification --}}
       <div class="proof-section-box" id="manualProofFields">
         <div style="font-size:13px; font-weight:700; color:#fff; margin-bottom:4px;">
@@ -797,6 +825,9 @@ body {
           @endforelse
         </tbody>
       </table>
+    </div>
+    <div style="margin-top:12px; text-align:right;">
+      <a href="{{ route('transactions.index') }}" style="font-size:12.5px; color:#00e676; font-weight:600; text-decoration:none;">View all transactions &gt;</a>
     </div>
   </div>
 </div>
@@ -1082,6 +1113,47 @@ function calcConvertedAmount() {
   const rate = parseFloat(currentMethodData.conversion_rate) || 1.0;
   const converted = (amt * rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
   document.getElementById('modal-converted-total').innerText = converted + ' ' + currentMethodData.currency;
+  updatePromoPreview();
+}
+
+// Live bonus preview for the applied promo code (data comes from ?promo=).
+// Only the code the server validated gets a preview; any other typed code
+// is validated again on submit and shows an error there if invalid.
+function updatePromoPreview() {
+  const preview = document.getElementById('promo-preview');
+  const input = document.getElementById('deposit-promo-input');
+  if (!preview || !input) return;
+  const appliedCode = (preview.dataset.code || '').toUpperCase();
+  const code = (input.value || '').trim().toUpperCase();
+  if (!code || code !== appliedCode) {
+    preview.style.display = 'none';
+    preview.innerText = '';
+    return;
+  }
+  const rewardType = preview.dataset.rewardType || '';
+  const rewardValue = parseFloat(preview.dataset.rewardValue || '0');
+  const minDeposit = parseFloat(preview.dataset.minDeposit || '0');
+  const amt = parseFloat(document.getElementById('deposit-amount-input').value) || 0;
+  if (minDeposit > 0 && amt > 0 && amt < minDeposit) {
+    preview.style.display = 'block';
+    preview.style.color = '#ff8a80';
+    preview.innerText = 'This code needs a minimum deposit of $' + minDeposit.toFixed(2) + '.';
+    return;
+  }
+  let bonus = 0;
+  if (rewardType === 'percentage') {
+    bonus = Math.round(amt * rewardValue) / 100;
+  } else if (rewardType === 'fixed_amount') {
+    bonus = rewardValue;
+  }
+  if (bonus > 0) {
+    preview.style.display = 'block';
+    preview.style.color = '#00e676';
+    preview.innerText = 'Bonus with this code: +$' + bonus.toFixed(2) + (rewardType === 'percentage' ? ' (' + rewardValue + '% of $' + amt.toFixed(2) + ')' : '') + ' — credited to your live balance.';
+  } else {
+    preview.style.display = 'none';
+    preview.innerText = '';
+  }
 }
 
 function previewProofImage(input) {

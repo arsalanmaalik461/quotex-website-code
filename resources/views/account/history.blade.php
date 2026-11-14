@@ -693,7 +693,8 @@
             @php
               $isWin = ($t->result === 'win');
               $isPendingTrade = ($t->result === 'pending');
-              $profitColorClass = $isWin ? 'cKYQK' : ($isPendingTrade ? '' : 'rSpgN');
+              $isDraw = ($t->result === 'draw' || $t->result === 'tie');
+              $profitColorClass = $isWin ? 'cKYQK' : (($isPendingTrade || $isDraw) ? '' : 'rSpgN');
               $tradeUuid = $t->uuid ?? sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x', mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0x0fff) | 0x4000, mt_rand(0, 0x3fff) | 0x8000, mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff));
             @endphp
             <div class="bQvOA">
@@ -761,12 +762,11 @@
               <!-- 8. Profit Column -->
               <div class="dj8M9 fTGaJ {{ $profitColorClass }}">
                 <b>
-                  @if($isWin)
-                    {{ number_format((float)$t->payout, 2) }}$
-                  @elseif($isPendingTrade)
+                  @if($isPendingTrade)
                     <span style="color:#78869e;">Pending</span>
                   @else
-                    0.00$
+                    @php $rowProfit = \App\Services\TradeResultService::settledProfit($t); @endphp
+                    {{ ($rowProfit > 0 ? '+' : ($rowProfit < 0 ? '-' : '')) . number_format(abs($rowProfit), 2) }}$
                   @endif
                 </b>
               </div>
@@ -804,12 +804,11 @@
                 </div>
                 <div class="dj8M9 fTGaJ {{ $profitColorClass }}">
                   <b>
-                    @if($isWin)
-                      {{ number_format((float)$t->payout, 2) }}$
-                    @elseif($isPendingTrade)
+                    @if($isPendingTrade)
                       Pending
                     @else
-                      0.00$
+                      @php $rowProfit = \App\Services\TradeResultService::settledProfit($t); @endphp
+                      {{ ($rowProfit > 0 ? '+' : ($rowProfit < 0 ? '-' : '')) . number_format(abs($rowProfit), 2) }}$
                     @endif
                   </b>
                 </div>
