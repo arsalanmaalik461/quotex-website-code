@@ -33,6 +33,9 @@ class OtcPriceEngine
     private static array $marketStateCache = [];
     private static array $steeringCache = [];
 
+    /** Lazily built CRC-32/BZIP2 table for self::crc32bHex(). */
+    private static ?array $crc32bTable = null;
+
     /**
      * Get accurate decimal precision for an asset price.
      */
@@ -164,12 +167,51 @@ class OtcPriceEngine
     }
 
     /**
+     * Pure-PHP CRC-32/BZIP2 (poly 0x04C11DB7, init 0xFFFFFFFF,
+     * refin=false, refout=false, xorout=0xFFFFFFFF), table-driven.
+     *
+     * Hostinger's PHP returns NON-STANDARD values from hash('crc32b')
+     * on every PHP version 8.1-8.5 (crc32b('123456789') = cbf43926
+     * instead of the standard fc891918), so the engine can no longer
+     * trust the built-in hash. This returns the standard values —
+     * identical to hash('crc32b') on a correct PHP — so the price
+     * stream is byte-identical to the stream verified by the Node
+     * harness. Returns the same 8-char lowercase hex string
+     * hash('crc32b') returns: '123456789' -> 'fc891918',
+     * '' -> '00000000'.
+     */
+    public static function crc32bHex(string $data): string
+    {
+        if (self::$crc32bTable === null) {
+            $table = [];
+            for ($i = 0; $i < 256; $i++) {
+                $c = $i << 24;
+                for ($j = 0; $j < 8; $j++) {
+                    $c = ($c & 0x80000000) !== 0
+                        ? ((($c << 1) ^ 0x04C11DB7) & 0xFFFFFFFF)
+                        : (($c << 1) & 0xFFFFFFFF);
+                }
+                $table[$i] = $c;
+            }
+            self::$crc32bTable = $table;
+        }
+
+        $crc = 0xFFFFFFFF;
+        $len = strlen($data);
+        for ($i = 0; $i < $len; $i++) {
+            $crc = ((($crc << 8) & 0xFFFFFFFF) ^ self::$crc32bTable[(($crc >> 24) ^ ord($data[$i])) & 0xFF]) & 0xFFFFFFFF;
+        }
+
+        return sprintf('%08x', ($crc ^ 0xFFFFFFFF) & 0xFFFFFFFF);
+    }
+
+    /**
      * Deterministic pseudo-random number generator anchored by key and slot.
      * Returns float in [-1.0, 1.0].
      */
     public static function deterministicHash(string $key, int $slot = 0): float
     {
-        $hash = hash('crc32b', "{$key}_{$slot}");
+        $hash = self::crc32bHex("{$key}_{$slot}");
         $val  = hexdec($hash);
         return (($val % 2000000) / 1000000.0) - 1.0;
     }
@@ -360,13 +402,47 @@ class OtcPriceEngine
      * "123456789" is 0xFC891918 for the CRC step; the finalizer is
      * the splitmix32 sequence below (verify in the Node harness).
      */
+    /**
+     * Exact low 32 bits of the product of two unsigned 32-bit
+     * values, without overflow.
+     *
+     * PHP integers are signed 64-bit, so a direct 32-bit x 32-bit
+     * multiply can overflow PHP_INT_MAX (9,223,372,036,854,775,807)
+     * — e.g. 0xFFFFFFFF x 0x846CA68B = 9,542,184,824,200,190,325 —
+     * and PHP then silently evaluates it as an IEEE-754 double,
+     * losing the low bits. Splitting both operands into 16-bit
+     * halves keeps every partial product below 2^32, so the result
+     * is exact. Matches JS Math.imul(a, b) >>> 0 in the Node
+     * harness (price-process-verify.mjs).
+     */
+    private static function mul32(int $a, int $b): int
+    {
+        $aLo = $a & 0xFFFF;
+        $aHi = ($a >> 16) & 0xFFFF;
+        $bLo = $b & 0xFFFF;
+        $bHi = ($b >> 16) & 0xFFFF;
+        $cross = ($aLo * $bHi + $aHi * $bLo) & 0xFFFF;
+        return (($aLo * $bLo) + ($cross << 16)) & 0xFFFFFFFF;
+    }
+
     private static function pxHashU32(string $key): int
     {
-        $h = (int) hexdec(hash('crc32b', $key));
-        $h = (($h ^ ($h >> 16)) * 0x7FEB352D) & 0xFFFFFFFF;
-        $h = (($h ^ ($h >> 15)) * 0x846CA68B) & 0xFFFFFFFF;
+        $h = (int) hexdec(self::crc32bHex($key));
+        $h = self::mul32($h ^ ($h >> 16), 0x7FEB352D);
+        $h = self::mul32($h ^ ($h >> 15), 0x846CA68B);
         $h = ($h ^ ($h >> 16)) & 0xFFFFFFFF;
         return $h;
+    }
+
+    /**
+     * Public accessor for pxHashU32(), for the `engine:verify-hash`
+     * deploy-gate command only. The price path itself uses the
+     * private method; this wrapper exists so the gate can print
+     * sample outputs from the engine's own code.
+     */
+    public static function pxHashU32For(string $key): int
+    {
+        return self::pxHashU32($key);
     }
 
     private static function pxUniform01(string $key): float
