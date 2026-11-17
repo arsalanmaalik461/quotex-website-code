@@ -1001,7 +1001,7 @@ class OtcPriceEngine
      * Fixed timeframes use the absolute epoch grid; weeks start on
      * Monday 00:00 UTC; months on the 1st at 00:00 UTC.
      */
-    public static function candleStartForTimestamp(int $timestamp, int|string $timeframe): int
+    public static function candleStartForTimestamp(int $timestamp, int|string|array $timeframe): int
     {
         $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
 
@@ -1022,7 +1022,7 @@ class OtcPriceEngine
     /**
      * Start of the candle immediately after the one starting at $start.
      */
-    public static function nextCandleStart(int $start, int|string $timeframe): int
+    public static function nextCandleStart(int $start, int|string|array $timeframe): int
     {
         $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
 
@@ -1046,7 +1046,7 @@ class OtcPriceEngine
      * Implemented via candleStartForTimestamp($start - 1) so calendar
      * buckets (short February, leap years) stay exact.
      */
-    public static function prevCandleStart(int $start, int|string $timeframe): int
+    public static function prevCandleStart(int $start, int|string|array $timeframe): int
     {
         $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
         return self::candleStartForTimestamp($start - 1, $tf);
