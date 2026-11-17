@@ -8,6 +8,7 @@ use App\Models\Trade;
 use App\Models\TradeSimulationControl;
 use App\Models\User;
 use App\Services\DemoCycleService;
+use App\Services\LiveCycleService;
 use App\Services\TradeResultService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -110,7 +111,20 @@ class AdminTradeController extends Controller
             : [];
         $demoOffsets = [];
 
-        $trades = $pending->map(function ($trade) use ($settledDemoCounts, &$demoOffsets) {
+        // Settled live counts, one grouped query for the whole list,
+        // so the admin can see each live user's 4/6 position.
+        $liveUserIds = $pending->where('account_type', 'live')->pluck('user_id')->unique()->values()->all();
+        $settledLiveCounts = $liveUserIds !== []
+            ? Trade::whereIn('user_id', $liveUserIds)
+                ->where('account_type', 'live')
+                ->whereIn('result', ['win', 'loss'])
+                ->selectRaw('user_id, COUNT(*) as cnt')
+                ->groupBy('user_id')
+                ->pluck('cnt', 'user_id')->all()
+            : [];
+        $liveOffsets = [];
+
+        $trades = $pending->map(function ($trade) use ($settledDemoCounts, &$demoOffsets, $settledLiveCounts, &$liveOffsets) {
                 $user       = $trade->user;
                 $asset      = $trade->asset;
                 $openedTs   = $trade->opened_at ? $trade->opened_at->timestamp : $trade->created_at->timestamp;
@@ -121,7 +135,7 @@ class AdminTradeController extends Controller
 
                 // Current simulated profit/loss %
                 $profitPct = $trade->direction === 'up'
-                    ? round(($asset->payout_percent ?? 85), 2)
+                    ? round(($asset->payout_percent ?? 90), 2)
                     : round(-100, 2);
 
                 // Balance of the account this trade was placed on:
@@ -140,6 +154,19 @@ class AdminTradeController extends Controller
                     $demoOffsets[$userId] = (int) ($demoOffsets[$userId] ?? 0) + 1;
                     $demoCycle = DemoCycleService::positionLabel($effectiveCount);
                     $demoCycleResult = DemoCycleService::isLoss($userId, $effectiveCount) ? 'loss' : 'win';
+                }
+
+                // Live 4/6 position for this trade, e.g. "4/10",
+                // counting settled live trades plus earlier pending
+                // live trades for the same user.
+                $liveCycle = null;
+                $liveCycleResult = null;
+                if (!$isDemo && $user) {
+                    $userId = (int) $user->id;
+                    $effectiveCount = (int) ($settledLiveCounts[$userId] ?? 0) + (int) ($liveOffsets[$userId] ?? 0);
+                    $liveOffsets[$userId] = (int) ($liveOffsets[$userId] ?? 0) + 1;
+                    $liveCycle = LiveCycleService::positionLabel($effectiveCount);
+                    $liveCycleResult = LiveCycleService::isLoss($userId, $effectiveCount) ? 'loss' : 'win';
                 }
 
                 return [
@@ -162,6 +189,8 @@ class AdminTradeController extends Controller
                     'account_type'    => $trade->account_type,
                     'demo_cycle'      => $demoCycle,
                     'demo_cycle_result' => $demoCycleResult,
+                    'live_cycle'      => $liveCycle,
+                    'live_cycle_result' => $liveCycleResult,
                 ];
             })
             ->values();

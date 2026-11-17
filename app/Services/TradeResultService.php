@@ -97,12 +97,22 @@ class TradeResultService
                 $forcedSide = DemoCycleService::forcedSideForTrade($trade, $settledDemoCount);
             }
 
+            // 3b. Live 4/6 cycle (live trades only, and only when no
+            // admin / pair / global control forced this trade).
+            // In every 10 settled live trades: 4 wins, 6 losses.
+            // See LiveCycleService: same structure as the demo 8/2
+            // cycle — hash-derived positions, no counter, no reset.
+            if ($forcedSide === null && $trade->account_type === 'live') {
+                $settledLiveCount = LiveCycleService::settledLiveCount((int) $trade->user_id);
+                $forcedSide = LiveCycleService::forcedSideForTrade($trade, $settledLiveCount);
+            }
+
             [$closePrice, $spikeInjected] = self::calculateClosePrice($trade, $asset, $forcedSide, $openPrice, $precision, $pip);
 
             // 4. Determine result based on close price vs open price.
             // Equal prices are a draw: the investment is refunded in
             // full (see actualPayoutFor) and the trade counts as neither
-            // a win nor a loss (demo 8/2 cycle, stats, referrals).
+            // a win nor a loss (demo 8/2 / live 4/6 cycle, stats, referrals).
             if ($trade->direction === 'up') {
                 $settlementResult = $closePrice > $openPrice ? 'win' : ($closePrice < $openPrice ? 'loss' : 'draw');
             } else {
@@ -280,7 +290,7 @@ class TradeResultService
     {
         $investment = (float) $trade->investment;
         $asset = $trade->asset;
-        $payoutPercent = $asset ? (float) $asset->payout_percent : 0.0;
+        $payoutPercent = $asset ? (float) OtcPriceEngine::payoutPercent($asset) : 0.0;
         $grossPayout = $investment * (1 + $payoutPercent / 100);
         $openPrice = (float) $trade->open_price;
 

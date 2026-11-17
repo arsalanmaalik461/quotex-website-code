@@ -24,7 +24,7 @@ return new class extends Migration
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol VARCHAR(255) NOT NULL,
                     name VARCHAR(255) NOT NULL,
-                    payout_percent INTEGER NOT NULL DEFAULT 85,
+                    payout_percent INTEGER NOT NULL DEFAULT 90,
                     type VARCHAR(20) NOT NULL DEFAULT \'forex\',
                     is_otc BOOLEAN NOT NULL DEFAULT 0,
                     is_active BOOLEAN NOT NULL DEFAULT 1,

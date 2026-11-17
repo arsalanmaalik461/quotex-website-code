@@ -248,56 +248,429 @@ class OtcPriceEngine
         return self::applyLastSecondsSteering($asset, $timestamp, $autoPrice);
     }
 
+    // -----------------------------------------------------------------
+    // Team A — realistic organic price process (chart-realism phase).
+    //
+    // The organic price is a deterministic multi-scale random walk
+    // built from dyadic "tent" functions (Lévy–Ciesielski / Schauder
+    // construction of Brownian motion): at every level n the price
+    // picks up exactly one tent containing the queried instant, so
+    // the price is a pure function of (symbol, timestamp) — identical
+    // for every client, tab and settlement — yet the path is jagged,
+    // aperiodic, and has real runs, trends and volatility clustering.
+    //
+    // Level map (tent width in seconds is 2^(31-n), so level 0 is
+    // ~68 years wide and level 30 is 1 second wide):
+    //  * levels 0..6   — multi-year tents; damped 0.05x so the price
+    //                  level MEAN-REVERTS to base over ~year
+    //                  horizons instead of wandering with time since
+    //                  the 2019 epoch (at full weight, multiplied by
+    //                  a crypto scale of ~5.5, the level could drift
+    //                  by orders of magnitude). Multi-week/month
+    //                  trends (levels 7..13) are untouched.
+    //  * hard cap      — the total log-return is also capped by a
+    //                  smooth tanh at 30x the asset's daily vol, so
+    //                  the level can NEVER drift by orders of
+    //                  magnitude for any asset, however large its
+    //                  scale. The cap almost never binds (typical
+    //                  |log-return| is ~1/6 of it).
+    //  * levels 10..12 — regime drift bias (4–17 day tents): a
+    //                  trending regime's bias moves the price ~1–2%
+    //                  over the regime, then it corrects.
+    //  * levels 14..30 — local volatility: each tent's amplitude is
+    //                  scaled by sigma_local at the tent's centre
+    //                  (regime multiplier x volatility-clustering
+    //                  multiplier). These levels carry almost none
+    //                  of the point value, so scaling them moves the
+    //                  *increments*, not the price level.
+    //  * levels 24..30 — tick levels (<= ~2 min), additionally
+    //                  boosted 1.5x so 1-minute candles have a
+    //                  realistic size relative to the daily move.
+    //  * clustering    — sigma_local depends on realised movement of
+    //                  the unmodulated core walk over 1 h / 6 h /
+    //                  1 d lookbacks, so quiet and stormy stretches
+    //                  both occur.
+    //  * jumps         — rare hash-triggered news spikes (~7/year):
+    //                  a 45 s smooth ramp, then partial mean
+    //                  reversion (a permanent step of the remainder).
+    //
+    // All seeded-hash based; NO unseeded randomness anywhere.
+    //
+    // Team B hook: samplePathExtrema() returns the true high/low of
+    // the path over an interval — call it from generateCandles()
+    // instead of the fabricated wick offsets.
+    //
+    // NOTE FOR DEPLOY: this replaces the old sine-wave model, so the
+    // price LEVEL steps (by up to a few %) at deploy and the whole
+    // regenerated history changes shape. That is inherent to a
+    // price-model redesign; there is no candles table to migrate.
+    // -----------------------------------------------------------------
+
+    public const ORGANIC_EPOCH = 1546300800;             // 2019-01-01 00:00:00 UTC
+    public const ORGANIC_SPAN_SECONDS = 2147483648;      // 2^31 s, 2019 -> ~2087
+    public const ORGANIC_MAX_LEVEL = 30;                 // finest tents 1 s wide
+    public const ORGANIC_CORE_MIN_LEVEL = 8;             // core walk: tents <= ~97 d
+    public const ORGANIC_LONG_DAMP_MAX_LEVEL = 6;        // multi-year tents damped
+    public const ORGANIC_LONG_DAMP_FACTOR = 0.05;        // ~removed: the level must
+    // mean-revert to base. With these levels at full weight the
+    // point value of the walk grows with time since the 2019 epoch
+    // and, multiplied by a crypto scale of ~5.5, the level could
+    // drift by orders of magnitude (Team B saw BTC x420). At 0.05
+    // the level is dominated by tents of <= ~1.1 y width, so it is
+    // bounded and reverts to base over ~year horizons; multi-week
+    // and multi-month trends (levels 7..13) are untouched.
+    // Belt and braces: the total log-return is also hard-capped
+    // (see ORGANIC_LOGRET_CAP_MULT in calculateOrganicPrice).
+    public const ORGANIC_BIAS_MIN_LEVEL = 10;            // regime drift: 17 d tents
+    public const ORGANIC_BIAS_MAX_LEVEL = 12;            // regime drift: 4.3 d tents
+    public const ORGANIC_SIGMA_MIN_LEVEL = 14;           // vol scaling from 1.5 d down
+    public const ORGANIC_TICK_MIN_LEVEL = 24;            // tick boost from ~2 min down
+    public const ORGANIC_TICK_BOOST = 1.2;
+    public const ORGANIC_REGIME_SECONDS = 432000;        // 5-day regimes
+    public const ORGANIC_JUMP_PROB_PER_DAY = 0.019;      // ~7 jumps / year
+    public const ORGANIC_JUMP_RAMP_SECONDS = 45.0;
+    public const ORGANIC_JUMP_REVERT_TAU = 1500.0;       // 25 min mean-reversion time
+    // Calibration for the average sigma_local inflation of the daily
+    // variance (regime mix x clustering); verified by the Node
+    // harness so the realised daily sd lands on the target daily vol.
+    public const ORGANIC_SCALE_CAL = 0.79;
+    // Hard bound on the total log-return |log(price/base)|, as a
+    // multiple of the asset's daily vol: 30x gives ~±18% for major
+    // forex (0.0055 -> 0.165), ~±35% for gold, ~x2.9 for crypto
+    // (0.035 -> 1.05). Applied as a smooth tanh cap so the function
+    // stays continuous and differentiable; in normal operation the
+    // level sits far inside the cap (typical |log-return| is
+    // ~1/6 of it), so the cap almost never binds.
+    public const ORGANIC_LOGRET_CAP_MULT = 30.0;
+
+    private static array $organicRegimeCache = [];
+    private static array $organicSigmaCache = [];
+    private static array $organicCoreCache = [];
+    private static ?array $organicHeights = null;
+
+    /**
+     * Unsigned 32-bit hash of a key string: CRC-32/BZIP2 followed by
+     * a splitmix32-style avalanche finalizer.
+     *
+     * The finalizer is essential: CRC is linear over GF(2), so raw
+     * CRCs of same-length keys (e.g. two symbols, or adjacent tent
+     * indices) are related by a constant XOR mask and correlate
+     * numerically. The finalizer breaks that linearity.
+     * JS mirrors must use the same algorithm — check value for
+     * "123456789" is 0xFC891918 for the CRC step; the finalizer is
+     * the splitmix32 sequence below (verify in the Node harness).
+     */
+    private static function pxHashU32(string $key): int
+    {
+        $h = (int) hexdec(hash('crc32b', $key));
+        $h = (($h ^ ($h >> 16)) * 0x7FEB352D) & 0xFFFFFFFF;
+        $h = (($h ^ ($h >> 15)) * 0x846CA68B) & 0xFFFFFFFF;
+        $h = ($h ^ ($h >> 16)) & 0xFFFFFFFF;
+        return $h;
+    }
+
+    private static function pxUniform01(string $key): float
+    {
+        return self::pxHashU32($key) / 4294967296.0;
+    }
+
+    /**
+     * Approx standard normal from a single hash: the sum of its two
+     * 16-bit halves is triangular with unit variance (range ±2.45);
+     * across the ~31 tent levels the sum is close to normal.
+     */
+    private static function pxNormal(string $key): float
+    {
+        $h = self::pxHashU32($key);
+        $u1 = ($h & 0xFFFF) / 65536.0;
+        $u2 = (($h >> 16) & 0xFFFF) / 65536.0;
+        return ($u1 + $u2 - 1.0) * 2.449489742783178;
+    }
+
+    private static function organicHeight(int $n): float
+    {
+        if (self::$organicHeights === null) {
+            self::$organicHeights = [];
+            for ($i = 0; $i <= self::ORGANIC_MAX_LEVEL; $i++) {
+                self::$organicHeights[$i] = pow(2, -$i / 2 - 1);
+            }
+        }
+        return self::$organicHeights[$n];
+    }
+
+    /**
+     * Typical one-day log-volatility for a symbol (fraction of price).
+     * Symbol-based so the clustering lookbacks (which only know the
+     * symbol) calibrate identically to the price itself.
+     */
+    private static function organicDailyVol(string $symbol): float
+    {
+        $clean = strtoupper(str_replace(['(OTC)', 'OTC', ' ', '/', '-', '_', '.'], '', $symbol));
+
+        // Crypto
+        if (str_contains($clean, 'BTC') || str_contains($clean, 'ETH') || str_contains($clean, 'SOL') || str_contains($clean, 'BNB') || str_contains($clean, 'XRP') || str_contains($clean, 'DOGE') || str_contains($clean, 'LTC') || str_contains($clean, 'AZA')) {
+            return 0.035;
+        }
+        // Commodities
+        if (str_contains($clean, 'XAG') || str_contains($clean, 'SILVER')) return 0.016;
+        if (str_contains($clean, 'OIL') || str_contains($clean, 'BRENT') || str_contains($clean, 'CRUDE')) return 0.024;
+        if (str_contains($clean, 'XAU') || str_contains($clean, 'GOLD')) return 0.010;
+        // Stocks
+        if ($clean === 'AAPL' || $clean === 'BA' || $clean === 'MSFT' || $clean === 'TSLA') return 0.016;
+        // Indices
+        if (str_contains($clean, 'SP500') || str_contains($clean, 'SPX') || str_contains($clean, 'NASDAQ') || str_contains($clean, 'NDX') || str_contains($clean, 'DOW') || str_contains($clean, 'DJI')) return 0.011;
+        // Exotic forex (higher vol)
+        foreach (['TRY', 'ZAR', 'BDT', 'NGN', 'EGP', 'PKR', 'IDR', 'BRL', 'MXN', 'PHP', 'INR'] as $ccy) {
+            if (str_contains($clean, $ccy)) return 0.011;
+        }
+        return 0.0055; // major forex default
+    }
+
+    /**
+     * Scale factor for the unit walk: the unit walk's sd over one
+     * day is sqrt(86400 / SPAN), so this maps it onto the asset's
+     * typical daily log-volatility, corrected for the average
+     * sigma_local inflation (see ORGANIC_SCALE_CAL).
+     */
+    private static function organicScale(string $symbol): float
+    {
+        return self::ORGANIC_SCALE_CAL * self::organicDailyVol($symbol) / sqrt(86400.0 / self::ORGANIC_SPAN_SECONDS);
+    }
+
+    /**
+     * Regime parameters for one 5-day regime, derived only from the
+     * symbol and the regime index. Cached per request.
+     *
+     * calm (35%):     vol 0.50–0.65x, no drift bias
+     * trending (37%): vol 0.90–1.20x, drift bias ±(0.9–1.6)
+     * volatile (28%): vol 1.80–2.60x, drift bias ±(0.2–0.5)
+     */
+    private static function organicRegime(string $sym, int $index): array
+    {
+        $key = $sym . '|' . $index;
+        if (isset(self::$organicRegimeCache[$key])) {
+            return self::$organicRegimeCache[$key];
+        }
+        $uType = self::pxUniform01("px2:regime:{$sym}:{$index}:type");
+        $uVol  = self::pxUniform01("px2:regime:{$sym}:{$index}:vol");
+        $uDir  = self::pxUniform01("px2:regime:{$sym}:{$index}:dir");
+        $uBias = self::pxUniform01("px2:regime:{$sym}:{$index}:bias");
+        if ($uType < 0.35) {
+            $params = ['type' => 'calm', 'vol' => 0.50 + 0.15 * $uVol, 'bias' => 0.0];
+        } elseif ($uType < 0.72) {
+            $dir = $uDir < 0.5 ? -1.0 : 1.0;
+            $params = ['type' => 'trending', 'vol' => 0.90 + 0.30 * $uVol, 'bias' => $dir * (0.9 + 0.7 * $uBias)];
+        } else {
+            $dir = $uDir < 0.5 ? -1.0 : 1.0;
+            $params = ['type' => 'volatile', 'vol' => 1.8 + 0.8 * $uVol, 'bias' => $dir * (0.2 + 0.3 * $uBias)];
+        }
+        return self::$organicRegimeCache[$key] = $params;
+    }
+
+    private static function organicRegimeAt(string $sym, float $t): array
+    {
+        $index = (int) floor(($t - self::ORGANIC_EPOCH) / self::ORGANIC_REGIME_SECONDS);
+        if ($index < 0) $index = 0;
+        return self::organicRegime($sym, $index);
+    }
+
+    /**
+     * Contribution of level n's tent at normalised time $x (fraction
+     * of the span). The tent's coefficient is fixed by its centre
+     * time, so the path is continuous even though the volatility
+     * factor varies: a tent never changes amplitude mid-flight.
+     *
+     * $withSigma=false gives the unmodulated "core" walk used for the
+     * realised-volatility lookbacks (no recursion: the core never
+     * calls organicSigmaLocal).
+     */
+    private static function organicTentValue(string $sym, float $x, int $n, bool $withSigma): float
+    {
+        $pow = 1 << $n;
+        $pos = $x * $pow;
+        $k = (int) floor($pos);
+        if ($k >= $pow) $k = $pow - 1;
+        $u = $pos - $k;
+        $tri = $u < 0.5 ? 2.0 * $u : 2.0 * (1.0 - $u);
+        if ($tri <= 0.0) return 0.0;
+
+        $coef = self::pxNormal("px2:w:{$sym}:{$n}:{$k}");
+        $center = self::ORGANIC_EPOCH + ($k + 0.5) * (self::ORGANIC_SPAN_SECONDS / $pow);
+        $h = self::organicHeight($n);
+        if ($n <= self::ORGANIC_LONG_DAMP_MAX_LEVEL) $h *= self::ORGANIC_LONG_DAMP_FACTOR;
+        if ($n >= self::ORGANIC_BIAS_MIN_LEVEL && $n <= self::ORGANIC_BIAS_MAX_LEVEL) {
+            $coef += self::organicRegimeAt($sym, $center)['bias'];
+        }
+        if ($withSigma) {
+            if ($n >= self::ORGANIC_SIGMA_MIN_LEVEL) {
+                $coef *= self::organicSigmaLocal($sym, (int) floor($center / 60));
+            }
+            if ($n >= self::ORGANIC_TICK_MIN_LEVEL) {
+                $coef *= self::ORGANIC_TICK_BOOST;
+            }
+        }
+        return $coef * $h * $tri;
+    }
+
+    /**
+     * Unmodulated core walk (levels 8..30): the "market memory" the
+     * volatility-clustering lookbacks are measured on. Cached per
+     * request by integer timestamp.
+     */
+    private static function organicCoreWalk(string $sym, float $t): float
+    {
+        $it = (int) $t;
+        $ck = $sym . '|' . $it;
+        if (isset(self::$organicCoreCache[$ck])) {
+            return self::$organicCoreCache[$ck];
+        }
+        $x = ($t - self::ORGANIC_EPOCH) / self::ORGANIC_SPAN_SECONDS;
+        if ($x < 0.0) $x = 0.0;
+        if ($x >= 1.0) $x = 1.0 - 1e-12;
+        $sum = 0.0;
+        for ($n = self::ORGANIC_CORE_MIN_LEVEL; $n <= self::ORGANIC_MAX_LEVEL; $n++) {
+            $sum += self::organicTentValue($sym, $x, $n, false);
+        }
+        return self::$organicCoreCache[$ck] = $sum;
+    }
+
+    /**
+     * Local volatility factor for one minute bucket: regime
+     * multiplier x clustering multiplier. The clustering multiplier
+     * is driven by realised movement of the core walk over 1 h /
+     * 6 h / 1 d lookbacks (weighted 45/35/20), normalised by the
+     * expected |move| for a unit walk over that lag. Cached per
+     * request by (symbol, minute bucket); the value is a pure
+     * function of (symbol, bucket), so the cache is exact.
+     */
+    private static function organicSigmaLocal(string $sym, int $minuteBucket): float
+    {
+        $key = $sym . '|' . $minuteBucket;
+        if (isset(self::$organicSigmaCache[$key])) {
+            return self::$organicSigmaCache[$key];
+        }
+        $tau = $minuteBucket * 60 + 30; // bucket centre
+        $regimeVol = self::organicRegimeAt($sym, (float) $tau)['vol'];
+
+        $lags = [3600, 21600, 86400];
+        $weights = [0.45, 0.35, 0.20];
+        $shock = 0.0;
+        $coreNow = self::organicCoreWalk($sym, (float) $tau);
+        foreach ($lags as $i => $lag) {
+            $sd = sqrt($lag / self::ORGANIC_SPAN_SECONDS);
+            $d = abs($coreNow - self::organicCoreWalk($sym, (float) ($tau - $lag)));
+            $shock += $weights[$i] * ($d / (0.7978845608028654 * $sd));
+        }
+        $cluster = min(2.5, max(0.4, 0.6 + 0.4 * $shock));
+        $value = $regimeVol * $cluster;
+        return self::$organicSigmaCache[$key] = $value;
+    }
+
+    /**
+     * Full unit walk: all tent levels 0..30, sigma_local on levels
+     * >= 14, tick boost on levels >= 24, regime drift bias on
+     * levels 10..12.
+     */
+    private static function organicWalk(string $sym, float $t): float
+    {
+        $x = ($t - self::ORGANIC_EPOCH) / self::ORGANIC_SPAN_SECONDS;
+        if ($x < 0.0) $x = 0.0;
+        if ($x >= 1.0) $x = 1.0 - 1e-12;
+        $sum = 0.0;
+        for ($n = 0; $n <= self::ORGANIC_MAX_LEVEL; $n++) {
+            $sum += self::organicTentValue($sym, $x, $n, true);
+        }
+        return $sum;
+    }
+
+    /**
+     * Rare hash-triggered news jumps, in log-price units: one jump
+     * per day with probability 0.019 (~7/year). Amplitude is
+     * 0.4–1.2x the asset's daily vol, direction is hashed, the move
+     * ramps over 45 s (smoothstep, so the path stays continuous) and
+     * then partially mean-reverts (35–80% over ~25 min), leaving a
+     * permanent step of the remainder.
+     */
+    private static function organicJump(string $sym, float $t): float
+    {
+        $day0 = (int) floor(($t - 7200.0) / 86400.0);
+        $day1 = (int) floor($t / 86400.0);
+        $total = 0.0;
+        for ($d = $day0; $d <= $day1; $d++) {
+            if (self::pxUniform01("px2:jump:{$sym}:{$d}:p") >= self::ORGANIC_JUMP_PROB_PER_DAY) continue;
+            $uT = self::pxUniform01("px2:jump:{$sym}:{$d}:t");
+            $uA = self::pxUniform01("px2:jump:{$sym}:{$d}:a");
+            $uD = self::pxUniform01("px2:jump:{$sym}:{$d}:d");
+            $uR = self::pxUniform01("px2:jump:{$sym}:{$d}:r");
+            $tau = $d * 86400.0 + 3600.0 + 77400.0 * $uT; // 01:00–22:30 UTC
+            $dt = $t - $tau;
+            if ($dt < 0.0) continue;
+            $dir = $uD < 0.5 ? -1.0 : 1.0;
+            $amp = (0.4 + 0.8 * $uA) * self::organicDailyVol($sym);
+            $rho = 0.35 + 0.45 * $uR;
+            if ($dt < self::ORGANIC_JUMP_RAMP_SECONDS) {
+                $s = $dt / self::ORGANIC_JUMP_RAMP_SECONDS;
+                $total += $dir * $amp * $s * $s * (3.0 - 2.0 * $s);
+            } else {
+                $total += $dir * $amp * ((1.0 - $rho) + $rho * exp(-($dt - self::ORGANIC_JUMP_RAMP_SECONDS) / self::ORGANIC_JUMP_REVERT_TAU));
+            }
+        }
+        return $total;
+    }
+
+    /**
+     * Calculate continuous deterministic price for any asset at any timestamp.
+     * 100% synchronized across all clients, tabs, and server verification.
+     *
+     * Log-price model: base price anchored at the organic epoch, plus
+     * the scaled multi-scale random walk and the jump term. The path
+     * is continuous in time; the live tick and the forming candle
+     * close both read getDeterministicPrice(now), so they agree.
+     * The level is bounded by construction: the multi-year tents
+     * are damped to 0.05 (mean reversion to base over ~year
+     * horizons) and the total log-return is hard-capped by a smooth
+     * tanh at 30x the asset's daily vol, so no asset can drift by
+     * orders of magnitude however large its scale is.
+     * Steering (calculateControlledPrice / applyLastSecondsSteering)
+     * is layered on top of this and is untouched.
+     */
     private static function calculateOrganicPrice(Asset $asset, float $timestamp, ?float $basePrice = null): float
     {
-        $basePrice  = $basePrice ?: self::getBasePrice($asset);
-        $precision  = self::getPrecision($basePrice, $asset);
-        $pip        = pow(10, -$precision);
-        $volatility = $basePrice * 0.00030;
+        $basePrice = $basePrice ?: self::getBasePrice($asset);
+        $precision = self::getPrecision($basePrice, $asset);
+        $pip = pow(10, -$precision);
+        $sym = strtoupper($asset->symbol);
 
+        $logReturn = self::organicScale($sym) * self::organicWalk($sym, $timestamp)
+            + self::organicJump($sym, $timestamp);
+        $cap = self::ORGANIC_LOGRET_CAP_MULT * self::organicDailyVol($sym);
+        $logReturn = $cap * tanh($logReturn / $cap);
+        $price = $basePrice * exp($logReturn);
 
-        $seed = self::getSymbolSeed($asset->symbol);
-        $t = $timestamp;
-        $twoPi = 2 * M_PI;
+        return round(max($pip, $price), $precision);
+    }
 
-        // --- Multi-Year Macro & Secular Waves (4-5 Year Historical Structure) ---
-        // 5-year macro economic cycle (~157,680,000s)
-        $w5y = sin((($t + (($seed * 1337) % 157680000)) / 157680000.0) * $twoPi) * 45.0;
-        // 2-year macro swing (~63,072,000s)
-        $w2y = cos((($t + (($seed * 773) % 63072000)) / 63072000.0) * $twoPi) * 28.0;
-        // 1-year annual seasonal wave (~31,536,000s)
-        $w1y = sin((($t + (($seed * 521) % 31536000)) / 31536000.0) * $twoPi) * 18.0;
-        // 90-day quarterly market cycle (~7,776,000s)
-        $w3m = cos((($t + (($seed * 317) % 7776000)) / 7776000.0) * $twoPi) * 10.0;
-        // 30-day monthly swing wave (~2,592,000s)
-        $w1m = sin((($t + (($seed * 199) % 2592000)) / 2592000.0) * $twoPi) * 6.0;
-        // 7-day weekly market trend (~604,800s)
-        $w1w = cos((($t + (($seed * 97) % 604800)) / 604800.0) * $twoPi) * 4.0;
-        // 24-hour daily session oscillation (~86,400s)
-        $w1d = sin((($t + (($seed * 43) % 86400)) / 86400.0) * $twoPi) * 2.5;
-
-        // --- Intraday Intermediate Waves ---
-        // 4-hour intermediate momentum (~14,400s)
-        $w4h = cos((($t + ($seed % 14400)) / 14400.0) * $twoPi) * 1.5;
-        // 1-hour swing (~3,600s)
-        $w1h = sin((($t + ($seed % 3600)) / 3600.0) * $twoPi) * 0.9;
-        // 15-min macro wave
-        $w15m = sin(($t + ($seed % 997)) / 900.0) * 0.6;
-        // 4-min swing wave
-        $w4m = sin(($t + ($seed % 499)) / 240.0) * 0.4;
-        // 75-sec micro wave
-        $w75s = cos(($t + ($seed % 251)) / 75.0) * 0.25;
-
-        // --- Multi-Scale Smooth Organic Noise (C2-Continuous) ---
-        $nDay = self::smoothNoise($seed + 77, $t, 86400.0) * 4.0;
-        $nHr  = self::smoothNoise($seed + 33, $t, 3600.0) * 1.5;
-        $nMin = self::smoothNoise($seed, $t, 14.0) * 0.35;
-        $nSec = self::smoothNoise($seed + 101, $t, 4.5) * 0.15;
-
-        $totalWave = ($w5y + $w2y + $w1y + $w3m + $w1m + $w1w + $w1d + $w4h + $w1h + $w15m + $w4m + $w75s + $nDay + $nHr + $nMin + $nSec) * $volatility;
-
-        $price = max($pip, $basePrice + $totalWave);
-        return round($price, $precision);
+    /**
+     * True high/low of the deterministic price path over [start, end].
+     * Team B hook for generateCandles(): sample the actual path
+     * instead of the fabricated wick offsets. Samples $steps+1
+     * instants including both endpoints, so the extremes are true
+     * extrema of the sampled path (not invented wicks). For a
+     * 1-minute candle 24 steps (~2.5 s spacing) is plenty; use
+     * fewer steps for larger timeframes.
+     */
+    public static function samplePathExtrema(Asset $asset, float $start, float $end, int $steps = 24): array
+    {
+        $steps = max(1, $steps);
+        $high = null;
+        $low = null;
+        $span = $end - $start;
+        for ($i = 0; $i <= $steps; $i++) {
+            $p = self::getDeterministicPrice($asset, $start + $span * $i / $steps);
+            if ($high === null || $p > $high) $high = $p;
+            if ($low === null || $p < $low) $low = $p;
+        }
+        return ['high' => $high, 'low' => $low];
     }
 
     private static function calculateControlledPrice(
@@ -336,103 +709,487 @@ class OtcPriceEngine
     /**
      * Generate historical candlestick data for chart display.
      * Guaranteed 100% identical and synchronized for every user, session, and refresh.
-     * Supports multi-year history (up to 5+ years of historical candles).
+     *
+     * TEAM B — 3-year chart history (2026-11-14). Depth is achieved by
+     * PAGING, not storage: there is still no candles table. Prices are a
+     * pure deterministic function of (symbol, timestamp), so any window
+     * ending up to 3+ years in the past can be generated on demand.
+     *
+     * PAGING CONTRACT (for Team C / the frontend scroll-back):
+     *  - $timeframe accepts fixed seconds (int, e.g. 60) OR a key string:
+     *    '3s','5s','10s','15s','30s','1m','2m','3m','5m','10m','15m','30m',
+     *    '1h','4h','1d','1w' (Mon 00:00 UTC weeks) and '1M' (calendar
+     *    months). Int 604800 also means '1w'. A month has no fixed
+     *    second count, so it MUST be requested as the string '1M'.
+     *  - $count is clamped to a bounded page size (see maxPageSizeFor()):
+     *    1000 candles for sub-hourly timeframes, 2000 for 1h and above,
+     *    300 weeks, 120 months. Defaults cover ~5y on daily/weekly/
+     *    monthly; on small timeframes depth comes from paging.
+     *  - $endTime is an EXCLUSIVE upper bound: every returned candle
+     *    ends at or before $endTime, and the last candle is the one
+     *    ending exactly at the bucket boundary <= $endTime. To fetch
+     *    the next older page, pass endTime = first candle's `time` of
+     *    the current page. Two adjacent pages concatenate with no gap
+     *    and no overlap: older page's last close == newer page's
+     *    first open, and times are consecutive buckets.
+     *  - $endTime === null means "live": the last candle is the
+     *    forming candle, its close is getDeterministicPrice(now)
+     *    (the live tick), and its high/low only sample up to now.
+     *    With $endTime given, every candle is completed
+     *    (close = price at its bucket end) and fully reproducible.
+     *
+     * ALIGNMENT: fixed-second timeframes align on the absolute epoch
+     * grid (floor(t / tf) * tf). Weekly buckets start Monday 00:00
+     * UTC; monthly buckets start on the 1st at 00:00 UTC (month length
+     * handled by calendar math, incl. February and leap years). All
+     * buckets tile exactly: no gaps, no overlaps.
+     *
+     * CONTINUITY: open is always the deterministic price at the bucket
+     * start, close the price at the bucket end, so open[N] == close[N-1]
+     * exactly (same function, same timestamp). The forming candle's
+     * open == previous close for the same reason.
+     *
+     * HIGH/LOW are true extrema of the sampled price path: max/min over
+     * 13 evenly spaced samples of getDeterministicPrice() inside the
+     * bucket (fractions k/12, k = 0..12, endpoints included); 3-second
+     * candles use 5 samples (0.75 s spacing — still finer than the
+     * fastest price structure). There are NO independently fabricated
+     * wicks (the old deterministicNoise extraUpper/extraLower
+     * extensions are gone).
+     *
+     * CROSS-TIMEFRAME CONSISTENCY (exact by construction):
+     *  - 1m candles aggregate their 20 constituent 3s candles, so a 1m
+     *    candle's OHLC == the aggregation of its 3s candles.
+     *  - 1w / 1M candles aggregate their constituent daily candles, so
+     *    a monthly candle's OHLC == the aggregation of its daily
+     *    candles (same for weekly).
+     *  - Other pairs share the same underlying price function and the
+     *    same sampling rule, so they agree closely; they are not
+     *    bit-exact aggregates (a parent samples its own 13 points
+     *    while its children sample theirs more densely). See the
+     *    Team B Node verification for measured discrepancies.
      */
-    public static function generateCandles(Asset $asset, ?int $count = null, int $timeframeSec = 60, ?int $endTime = null): array
+    public static function generateCandles(Asset $asset, ?int $count = null, int|string $timeframeSec = 60, ?int $endTime = null): array
     {
         self::checkAndResetExpiredControl($asset);
 
-        $now = $endTime ? (int)$endTime : time();
-        $tf  = max(5, $timeframeSec);
+        $tf = self::resolveTimeframe($timeframeSec);
 
-        // Smart default count based on timeframe if not explicitly provided
-        if ($count === null || $count <= 0) {
-            if ($tf >= 86400) {
-                $count = 1825; // 5 full years of daily candles (365 * 5)
-            } elseif ($tf >= 14400) {
-                $count = 2000; // ~11 months of 4-hour candles
-            } elseif ($tf >= 3600) {
-                $count = 1500; // ~2 months of 1-hour candles
-            } elseif ($tf >= 1800) {
-                $count = 1200; // 25 days of 30-min candles
-            } elseif ($tf >= 900) {
-                $count = 1200; // 12.5 days of 15-min candles
-            } elseif ($tf >= 300) {
-                $count = 1000; // ~3.5 days of 5-min candles
-            } elseif ($tf >= 60) {
-                $count = 1000; // ~16.6 hours of 1-min candles
-            } else {
-                $count = 800;  // 800 micro candles
-            }
-        } else {
-            $count = min(5000, max(10, $count));
+        // A future endTime is just "live" (never return candles that
+        // end after now, and never let the forming candle leak ahead).
+        if ($endTime !== null && $endTime > time()) {
+            $endTime = null;
         }
+        $live = $endTime === null;
+        $now = $live ? time() : (int) $endTime;
 
-        $currentCandleStart = (int) floor($now / $tf) * $tf;
+        if ($count === null || $count <= 0) {
+            $count = self::defaultCandleCount($tf);
+        }
+        $count = min(max(1, $count), self::maxPageSizeFor($tf));
+
         $basePrice = self::getBasePrice($asset);
         $precision = self::getPrecision($basePrice, $asset);
-        $pip = pow(10, -$precision);
-        $seed = self::getSymbolSeed($asset->symbol);
+
+        // Newest bucket start of the window, then walk back $count buckets.
+        $anchorStart = $live
+            ? self::candleStartForTimestamp($now, $tf)
+            : self::prevCandleStart(self::candleStartForTimestamp($now, $tf), $tf);
+        $starts = self::bucketStartsEndingAt($anchorStart, $count, $tf);
+        $pageStart = $starts[0];
+        $pageEnd = self::nextCandleStart($starts[count($starts) - 1], $tf);
+
+        // Aggregation children: 1m <- 3s, 1w/1M <- 1d. Everything else
+        // is sampled directly (13 points per candle).
+        $childSeconds = self::aggregationChildSeconds($tf);
+
+        if ($childSeconds !== null) {
+            $children = [];
+            // 3-second children are sampled at 5 points (0.75 s spacing):
+            // that still resolves the fastest price structure (2 s tents,
+            // 45 s jump ramps) and keeps a 1-minute candle at 100 price
+            // evaluations instead of 260 — the initial 1m page load
+            // (1000 candles) stays affordable. 1m-vs-3s aggregation
+            // remains exact because the children use these same points.
+            $childPoints = $childSeconds === 3 ? 5 : self::CANDLE_SAMPLE_POINTS;
+            for ($t = $pageStart; $t < $pageEnd; $t += $childSeconds) {
+                if ($live && $t > $now) {
+                    break; // child buckets starting after now do not exist yet
+                }
+                $childEnd = $t + $childSeconds;
+                $clamp = ($live && $childEnd > $now) ? $now : null;
+                $children[] = self::buildDirectCandle($asset, $t, $childEnd, $precision, $clamp, $childPoints);
+            }
+
+            return self::aggregateChildrenIntoBuckets($children, $starts, $tf, $asset, $precision, $live ? $now : null);
+        }
 
         $candles = [];
-        $prevClose = null;
-
-        for ($i = $count - 1; $i >= 0; $i--) {
-            $cTime = $currentCandleStart - ($i * $tf);
-
-            // Strictly continuous Open
-            if ($prevClose !== null) {
-                $open = $prevClose;
-            } else {
-                $open = self::getDeterministicPrice($asset, (float) $cTime);
-            }
-
-            // Close
-            if ($i === 0 && !$endTime) {
-                $close = self::getDeterministicPrice($asset, (float) time());
-            } else {
-                $close = self::getDeterministicPrice($asset, (float) ($cTime + $tf));
-            }
-
-            // Sample continuous price path inside the candle
-            $p1 = self::getDeterministicPrice($asset, (float) ($cTime + $tf * 0.20));
-            $p2 = self::getDeterministicPrice($asset, (float) ($cTime + $tf * 0.45));
-            $p3 = self::getDeterministicPrice($asset, (float) ($cTime + $tf * 0.70));
-            $p4 = self::getDeterministicPrice($asset, (float) ($cTime + $tf * 0.88));
-
-            $bodyMax = max($open, $close);
-            $bodyMin = min($open, $close);
-            $body = $bodyMax - $bodyMin;
-
-            $trajHigh = max($bodyMax, $p1, $p2, $p3, $p4);
-            $trajLow  = min($bodyMin, $p1, $p2, $p3, $p4);
-
-            // Bounded realistic micro-wick extensions
-            $uHash = abs(self::deterministicNoise($seed, (int)($cTime * 3 + 1)));
-            $lHash = abs(self::deterministicNoise($seed, (int)($cTime * 5 + 3)));
-
-            $wickUnit = max($pip * 1.0, min($pip * 3.5, $body * 0.22));
-            $extraUpper = round($wickUnit * (0.2 + 0.8 * $uHash), $precision);
-            $extraLower = round($wickUnit * (0.2 + 0.8 * $lHash), $precision);
-
-            $high = round(max($bodyMax, $trajHigh + $extraUpper), $precision);
-            $low  = round(max($pip, min($bodyMin, $trajLow - $extraLower)), $precision);
-
-            if ($high < $bodyMax) $high = $bodyMax;
-            if ($low > $bodyMin) $low = $bodyMin;
-
-            $candles[] = [
-                'time'  => $cTime,
-                'open'  => $open,
-                'high'  => $high,
-                'low'   => $low,
-                'close' => $close,
-            ];
-
-            $prevClose = $close;
+        $points = $tf['kind'] === 'fixed' && (int) $tf['seconds'] === 3 ? 5 : self::CANDLE_SAMPLE_POINTS;
+        foreach ($starts as $idx => $start) {
+            $end = self::nextCandleStart($start, $tf);
+            $isForming = $live && $idx === count($starts) - 1;
+            $clamp = $isForming ? $now : null;
+            $candles[] = self::buildDirectCandle($asset, $start, $end, $precision, $clamp, $points);
         }
 
         return $candles;
+    }
+
+    /**
+     * Minimum guaranteed chart-history depth. The engine has no lower
+     * bound in code (the price function is defined for any timestamp);
+     * 3 years is the depth Team B verifies (see candles:verify-depth).
+     */
+    public const HISTORY_YEARS = 3;
+
+    /**
+     * Bounded page sizes for generateCandles(): history is paged by
+     * endTime, never materialised in one call.
+     */
+    public const MAX_CANDLES_SUBHOURLY = 1000;
+    public const MAX_CANDLES_HOURLY_AND_ABOVE = 2000;
+    public const MAX_CANDLES_WEEKLY = 300;
+    public const MAX_CANDLES_MONTHLY = 120;
+
+    /**
+     * Interior samples per directly-built candle (fractions k/12,
+     * k = 0..12, endpoints included). High/low are the max/min over
+     * exactly these sampled prices — true path extrema, no wicks.
+     */
+    public const CANDLE_SAMPLE_POINTS = 13;
+
+    /**
+     * All timeframes the UI offers, keyed by their label. '1w' is a
+     * calendar week (Monday 00:00 UTC); '1M' is a calendar month and
+     * therefore has no fixed second count (null). The int values are
+     * also accepted as $timeframeSec (604800 == '1w').
+     */
+    public static function supportedTimeframes(): array
+    {
+        return [
+            '3s' => 3, '5s' => 5, '10s' => 10, '15s' => 15, '30s' => 30,
+            '1m' => 60, '2m' => 120, '3m' => 180, '5m' => 300, '10m' => 600,
+            '15m' => 900, '30m' => 1800, '1h' => 3600, '4h' => 14400,
+            '1d' => 86400, '1w' => 604800, '1M' => null,
+        ];
+    }
+
+    /**
+     * Normalise a timeframe (int seconds or key string) to
+     * ['key' => string, 'kind' => 'fixed'|'week'|'month', 'seconds' => ?int].
+     * Unknown values fall back to 1m, matching the old clamping
+     * behaviour of the price-data endpoint instead of throwing.
+     */
+    public static function resolveTimeframe(int|string $timeframe): array
+    {
+        if (is_string($timeframe)) {
+            $raw = trim($timeframe);
+            if ($raw === '1M') {
+                return ['key' => '1M', 'kind' => 'month', 'seconds' => null];
+            }
+            $lower = strtolower($raw);
+            $map = self::supportedTimeframes();
+            if (isset($map[$lower])) {
+                $seconds = $map[$lower];
+                return $lower === '1w'
+                    ? ['key' => '1w', 'kind' => 'week', 'seconds' => 604800]
+                    : ['key' => $lower, 'kind' => 'fixed', 'seconds' => $seconds];
+            }
+            if (is_numeric($raw)) {
+                return self::resolveTimeframe((int) $raw);
+            }
+            return ['key' => '1m', 'kind' => 'fixed', 'seconds' => 60];
+        }
+
+        $seconds = (int) $timeframe;
+        if ($seconds === 604800) {
+            return ['key' => '1w', 'kind' => 'week', 'seconds' => 604800];
+        }
+        if ($seconds >= 3 && $seconds <= 86400) {
+            $key = (string) $seconds . 's';
+            foreach (self::supportedTimeframes() as $label => $value) {
+                if ($value === $seconds) {
+                    $key = $label;
+                    break;
+                }
+            }
+            return ['key' => $key, 'kind' => 'fixed', 'seconds' => $seconds];
+        }
+
+        return ['key' => '1m', 'kind' => 'fixed', 'seconds' => 60];
+    }
+
+    /**
+     * Start (epoch seconds, UTC) of the candle containing $timestamp.
+     * Fixed timeframes use the absolute epoch grid; weeks start on
+     * Monday 00:00 UTC; months on the 1st at 00:00 UTC.
+     */
+    public static function candleStartForTimestamp(int $timestamp, int|string $timeframe): int
+    {
+        $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
+
+        if ($tf['kind'] === 'month') {
+            return (int) gmmktime(0, 0, 0, (int) gmdate('n', $timestamp), 1, (int) gmdate('Y', $timestamp));
+        }
+
+        if ($tf['kind'] === 'week') {
+            $dayStart = (int) floor($timestamp / 86400) * 86400;
+            $dow = (int) gmdate('N', $timestamp); // 1 = Monday .. 7 = Sunday
+            return $dayStart - ($dow - 1) * 86400;
+        }
+
+        $seconds = (int) $tf['seconds'];
+        return (int) floor($timestamp / $seconds) * $seconds;
+    }
+
+    /**
+     * Start of the candle immediately after the one starting at $start.
+     */
+    public static function nextCandleStart(int $start, int|string $timeframe): int
+    {
+        $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
+
+        if ($tf['kind'] === 'month') {
+            $year = (int) gmdate('Y', $start);
+            $month = (int) gmdate('n', $start);
+            return $month === 12
+                ? (int) gmmktime(0, 0, 0, 1, 1, $year + 1)
+                : (int) gmmktime(0, 0, 0, $month + 1, 1, $year);
+        }
+
+        if ($tf['kind'] === 'week') {
+            return $start + 604800;
+        }
+
+        return $start + (int) $tf['seconds'];
+    }
+
+    /**
+     * Start of the candle immediately before the one starting at $start.
+     * Implemented via candleStartForTimestamp($start - 1) so calendar
+     * buckets (short February, leap years) stay exact.
+     */
+    public static function prevCandleStart(int $start, int|string $timeframe): int
+    {
+        $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
+        return self::candleStartForTimestamp($start - 1, $tf);
+    }
+
+    /**
+     * The $count bucket starts ending with $anchorStart (the newest
+     * bucket), ascending, oldest first.
+     */
+    private static function bucketStartsEndingAt(int $anchorStart, int $count, array $tf): array
+    {
+        $starts = [$anchorStart];
+        $cursor = $anchorStart;
+        for ($i = 1; $i < $count; $i++) {
+            $cursor = self::prevCandleStart($cursor, $tf);
+            $starts[] = $cursor;
+        }
+        return array_reverse($starts);
+    }
+
+    /**
+     * Default page size when the caller passes no count. Daily/weekly/
+     * monthly defaults already cover ~5 years; small timeframes rely
+     * on endTime paging for depth (see the generateCandles contract).
+     */
+    private static function defaultCandleCount(array $tf): int
+    {
+        if ($tf['kind'] === 'month') {
+            return 60; // 5 years of monthly candles
+        }
+        if ($tf['kind'] === 'week') {
+            return 260; // 5 years of weekly candles
+        }
+
+        $seconds = (int) $tf['seconds'];
+        if ($seconds >= 86400) {
+            return 1825; // 5 full years of daily candles
+        }
+        if ($seconds >= 14400) {
+            return 2000; // ~11 months of 4-hour candles
+        }
+        if ($seconds >= 3600) {
+            return 1500; // ~2 months of 1-hour candles
+        }
+        if ($seconds >= 60) {
+            return 1000; // 1m–30m candles
+        }
+        return 800; // 800 micro candles (3s–30s)
+    }
+
+    /**
+     * Hard per-call page cap for one timeframe (explicit counts are
+     * clamped to this; see generateCandles()). Public so callers
+     * (price-data endpoint, candles:verify-depth) can size pages
+     * without duplicating the table.
+     */
+    public static function maxPageSizeFor(int|string|array $timeframe): int
+    {
+        $tf = is_array($timeframe) ? $timeframe : self::resolveTimeframe($timeframe);
+        if ($tf['kind'] === 'month') {
+            return self::MAX_CANDLES_MONTHLY;
+        }
+        if ($tf['kind'] === 'week') {
+            return self::MAX_CANDLES_WEEKLY;
+        }
+        if ((int) $tf['seconds'] >= 3600) {
+            return self::MAX_CANDLES_HOURLY_AND_ABOVE;
+        }
+        return self::MAX_CANDLES_SUBHOURLY;
+    }
+
+    /**
+     * Child timeframe (in seconds) whose candles a parent aggregates,
+     * or null when the parent is sampled directly. 1m aggregates 3s
+     * candles; 1w and 1M aggregate daily candles. These are the pairs
+     * whose OHLC aggregation is exact by construction.
+     */
+    private static function aggregationChildSeconds(array $tf): ?int
+    {
+        if ($tf['kind'] === 'fixed' && (int) $tf['seconds'] === 60) {
+            return 3;
+        }
+        if ($tf['kind'] === 'week' || $tf['kind'] === 'month') {
+            return 86400;
+        }
+        return null;
+    }
+
+    /**
+     * One directly-sampled candle: open = price at bucket start,
+     * close = price at bucket end (or at $clampBefore for the forming
+     * candle — never sample the future), high/low = max/min over
+     * $points evenly spaced price samples inside the bucket,
+     * endpoints included. No fabricated wicks. $points defaults to
+     * CANDLE_SAMPLE_POINTS (13); 3-second candles use 5 (see
+     * generateCandles(): 0.75 s spacing is still finer than the
+     * fastest price structure, and it keeps 1m aggregation cheap).
+     */
+    private static function buildDirectCandle(Asset $asset, int $start, int $end, int $precision, ?int $clampBefore = null, int $points = self::CANDLE_SAMPLE_POINTS): array
+    {
+        $open = self::getDeterministicPrice($asset, (float) $start);
+        $closeTime = $clampBefore !== null ? min($end, $clampBefore) : $end;
+        $close = self::getDeterministicPrice($asset, (float) $closeTime);
+
+        $high = max($open, $close);
+        $low = min($open, $close);
+
+        $span = $end - $start;
+        for ($k = 1; $k < $points - 1; $k++) {
+            $t = $start + $span * $k / ($points - 1);
+            if ($clampBefore !== null && $t > $clampBefore) {
+                $t = (float) $clampBefore;
+            }
+            $price = self::getDeterministicPrice($asset, (float) $t);
+            if ($price > $high) {
+                $high = $price;
+            }
+            if ($price < $low) {
+                $low = $price;
+            }
+        }
+
+        return [
+            'time' => $start,
+            'open' => round($open, $precision),
+            'high' => round($high, $precision),
+            'low' => round($low, $precision),
+            'close' => round($close, $precision),
+        ];
+    }
+
+    /**
+     * Aggregate pre-built child candles into their parent buckets.
+     * OHLC of a parent == aggregation of its children by definition:
+     * open = first child's open, close = last child's close,
+     * high = max of children's highs, low = min of children's lows.
+     * Children must be ascending by time; a single pointer walk keeps
+     * this linear even for a 60-month page (1800 daily children).
+     * A bucket with no children (only possible if the page window was
+     * cut short) falls back to a directly-sampled candle.
+     */
+    private static function aggregateChildrenIntoBuckets(array $children, array $bucketStarts, array $tf, Asset $asset, int $precision, ?int $clampBefore = null): array
+    {
+        $out = [];
+        $childCount = count($children);
+        $childIdx = 0;
+        $bucketCount = count($bucketStarts);
+
+        foreach ($bucketStarts as $b => $bucketStart) {
+            $bucketEnd = $b + 1 < $bucketCount
+                ? $bucketStarts[$b + 1]
+                : self::nextCandleStart($bucketStart, $tf);
+
+            $group = [];
+            while ($childIdx < $childCount && $children[$childIdx]['time'] < $bucketStart) {
+                $childIdx++; // defensive: children before this bucket (never expected)
+            }
+            while ($childIdx < $childCount && $children[$childIdx]['time'] < $bucketEnd) {
+                $group[] = $children[$childIdx];
+                $childIdx++;
+            }
+
+            if ($group === []) {
+                $isForming = $clampBefore !== null && $b === $bucketCount - 1;
+                $out[] = self::buildDirectCandle($asset, $bucketStart, $bucketEnd, $precision, $isForming ? $clampBefore : null);
+                continue;
+            }
+
+            $out[] = self::aggregateCandleGroup($group);
+        }
+
+        return $out;
+    }
+
+    /**
+     * OHLC aggregation of a non-empty list of ascending child candles.
+     */
+    private static function aggregateCandleGroup(array $children): array
+    {
+        $first = $children[0];
+        $last = $children[count($children) - 1];
+        $high = $first['high'];
+        $low = $first['low'];
+
+        foreach ($children as $child) {
+            if ($child['high'] > $high) {
+                $high = $child['high'];
+            }
+            if ($child['low'] < $low) {
+                $low = $child['low'];
+            }
+        }
+
+        return [
+            'time' => $first['time'],
+            'open' => $first['open'],
+            'high' => $high,
+            'low' => $low,
+            'close' => $last['close'],
+        ];
+    }
+
+    /**
+     * Earliest timestamp (epoch seconds) that still counts as "full
+     * depth" for this engine: now minus HISTORY_YEARS years. Any
+     * window ending at or after this is guaranteed generatable.
+     */
+    public static function historyDepthCutoff(?int $now = null, int $years = self::HISTORY_YEARS): int
+    {
+        $now = $now ?? time();
+        $year = (int) gmdate('Y', $now) - $years;
+        return (int) gmmktime(
+            (int) gmdate('H', $now),
+            (int) gmdate('i', $now),
+            (int) gmdate('s', $now),
+            (int) gmdate('n', $now),
+            (int) gmdate('j', $now),
+            $year
+        );
     }
 
     /**
@@ -481,9 +1238,9 @@ class OtcPriceEngine
 
     /**
      * Documented fallback when an asset has no stored payout.
-     * Matches the assets migration default (85).
+     * Matches the assets migration default (90).
      */
-    public const DEFAULT_PAYOUT_PERCENT = 85;
+    public const DEFAULT_PAYOUT_PERCENT = 90;
 
     /**
      * Stored admin-configured payout %, or the documented default.
@@ -998,10 +1755,11 @@ class OtcPriceEngine
      * getDeterministicPrice() thousands of times per page load.
      *
      * The forced side comes from admin / pair / global control, or
-     * from the demo 8/2 cycle for demo trades with no other force.
-     * Demo positions are peeked in expiry order, counting settled
-     * demo trades plus earlier-pending demo trades for the same
-     * user, so the peek matches what settle() will decide later.
+     * from the demo 8/2 cycle for demo trades (live 4/6 cycle for
+     * live trades) with no other force. Cycle positions are peeked
+     * in expiry order, counting settled trades plus earlier-pending
+     * trades for the same user, so the peek matches what settle()
+     * will decide later.
      */
     private static function steeringCandidates(Asset $asset): array
     {
@@ -1040,6 +1798,20 @@ class OtcPriceEngine
             }
             $demoOffsets = [];
 
+            $liveUserIds = $trades
+                ->filter(fn (Trade $t) => $t->account_type === 'live' && self::forcedSideForTrade($t, $asset, $globalMode) === null)
+                ->pluck('user_id')->unique()->values()->all();
+            $settledLiveCounts = [];
+            if ($liveUserIds !== []) {
+                $settledLiveCounts = Trade::whereIn('user_id', $liveUserIds)
+                    ->where('account_type', 'live')
+                    ->whereIn('result', ['win', 'loss'])
+                    ->selectRaw('user_id, COUNT(*) as cnt')
+                    ->groupBy('user_id')
+                    ->pluck('cnt', 'user_id')->all();
+            }
+            $liveOffsets = [];
+
             foreach ($trades as $trade) {
                 $forcedSide = self::forcedSideForTrade($trade, $asset, $globalMode);
 
@@ -1050,6 +1822,16 @@ class OtcPriceEngine
 
                     if ($forcedSide === null) {
                         $forcedSide = DemoCycleService::forcedSideForTrade($trade, $effectiveCount);
+                    }
+                }
+
+                if ($trade->account_type === 'live') {
+                    $userId = (int) $trade->user_id;
+                    $effectiveCount = (int) ($settledLiveCounts[$userId] ?? 0) + (int) ($liveOffsets[$userId] ?? 0);
+                    $liveOffsets[$userId] = (int) ($liveOffsets[$userId] ?? 0) + 1;
+
+                    if ($forcedSide === null) {
+                        $forcedSide = LiveCycleService::forcedSideForTrade($trade, $effectiveCount);
                     }
                 }
 

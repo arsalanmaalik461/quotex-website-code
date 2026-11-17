@@ -273,7 +273,7 @@ function createRow(trade) {
     el.innerHTML = `
         <div class="user-info">
             <div class="name">${trade.user_name} <span class="badge-status ${trade.account_type === 'demo' ? 'blue' : 'green'}" style="font-size:10px;padding:2px 6px">${trade.account_type === 'demo' ? 'DEMO' : 'LIVE'}</span></div>
-            <div class="sub">$${trade.user_balance} · ${trade.account_age}d old · ${trade.total_trades} trades${trade.account_type === 'demo' && trade.demo_cycle ? ' · Demo ' + trade.demo_cycle : ''}</div>
+            <div class="sub">$${trade.user_balance} · ${trade.account_age}d old · ${trade.total_trades} trades${trade.account_type === 'demo' && trade.demo_cycle ? ' · Demo ' + trade.demo_cycle : ''}${trade.account_type === 'live' && trade.live_cycle ? ' · Live ' + trade.live_cycle : ''}</div>
         </div>
         <div style="font-weight:600;color:var(--text-primary)">${trade.asset_symbol}</div>
         <div><span class="badge-status ${dirClass}">${dirIcon}</span></div>

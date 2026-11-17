@@ -98,7 +98,7 @@ class AdminSignalController extends Controller
             'duration_seconds' => $durationSeconds,
             'start_time'       => $startTime,
             'expires_at'       => $expiresAt,
-            'payout_percent'   => $request->payout_percent ?? $asset->payout_percent ?? 85.00,
+            'payout_percent'   => $request->payout_percent ?? $asset->payout_percent ?? 90.00,
             'is_active'        => true,
             'status'           => 'active',
             'notes'            => $request->notes,

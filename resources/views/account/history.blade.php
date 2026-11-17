@@ -777,7 +777,7 @@
               <!-- 2. Info Column -->
               <div class="tA1xK">
                 <div class="wOyXY">
-                  {{ $t->asset->payout_rate ?? 92 }}%
+                  {{ $t->asset->payout_rate ?? 90 }}%
                 </div>
                 <div class="YHOFT" title="{{ $tradeUuid }}">
                   {{ $tradeUuid }}
@@ -845,7 +845,7 @@
                   <b>{{ $t->asset->symbol ?? 'USD/JPY (OTC)' }}</b>
                 </div>
                 <div class="aYU1j">
-                  <span>{{ $t->asset->payout_rate ?? 92 }}%</span>
+                  <span>{{ $t->asset->payout_rate ?? 90 }}%</span>
                   <span class="YHOFT">{{ substr($tradeUuid, 0, 8) }}...</span>
                 </div>
                 <div class="wiNHN">—</div>

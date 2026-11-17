@@ -67,7 +67,7 @@ class TradeController extends Controller
                         'id' => $t->asset->id ?? 1,
                         'symbol' => $t->asset->symbol ?? 'AUD/CHF',
                         'flag' => $t->asset->flag_icon ?? '🇦🇺🇨🇭',
-                        'payout' => $t->asset->payout_percent ?? 85,
+                        'payout' => $t->asset->payout_percent ?? 90,
                     ],
                     'direction'  => $t->direction,
                     'investment' => (float)$t->investment,
@@ -176,7 +176,7 @@ class TradeController extends Controller
             }
 
             $openPrice = OtcPriceEngine::simulatePrice($asset);
-            $payout = round($investment * (1 + $asset->payout_percent / 100), 2);
+            $payout = round($investment * (1 + OtcPriceEngine::payoutPercent($asset) / 100), 2);
             $simulationMode = TradeSimulationControl::currentMode();
             $adminOverride = TradeSimulationControl::overrideForMode($simulationMode);
 
@@ -324,7 +324,7 @@ class TradeController extends Controller
             $asset = new Asset();
             $asset->symbol = $symbol ?: 'BTC/USD';
             $asset->control_mode = 'auto';
-            $asset->payout_percent = 85;
+            $asset->payout_percent = 90;
             $asset->type = (str_contains($symbol ?? '', 'BTC') || str_contains($symbol ?? '', 'ETH')) ? 'crypto' : 'forex';
         }
 
@@ -343,7 +343,20 @@ class TradeController extends Controller
         }
 
         $count = $request->filled('count') ? (int) $request->query('count') : null;
-        $timeframeSec = max(5, (int) $request->query('timeframe', 60));
+        // Paging contract (Team C deep-history scroll-back, Team B engine):
+        // the frontend pages older candles with ?timeframe=<key string:
+        // '3s'..'1M'> &count=<page size> &to_time=<endTime>, where
+        // endTime = the oldest loaded candle's `time` (endTime is an
+        // EXCLUSIVE upper bound, so that page ends exactly there — no
+        // gap, no overlap). The timeframe MUST stay a string when it
+        // is one: '1M' is a calendar month with no fixed second count,
+        // and (int) '1M' would be 0. Numeric values are cast and
+        // floored at 3s. Unknown keys fall back to 1m inside the
+        // engine (resolveTimeframe) instead of throwing.
+        $timeframeRaw = $request->query('timeframe', 60);
+        $timeframeSec = is_numeric($timeframeRaw)
+            ? max(3, (int) $timeframeRaw)
+            : (string) $timeframeRaw;
         $endTime = $request->filled('to_time') 
             ? (int) $request->query('to_time') 
             : ($request->filled('end_time') ? (int) $request->query('end_time') : null);

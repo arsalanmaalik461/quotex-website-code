@@ -653,6 +653,8 @@
         @endif
 
         <div id="trade-chart" class="trade-chart-canvas"></div>
+        <!-- Deep-history paging indicator (shown while an older page loads) -->
+        <div id="history-loading-indicator" class="history-loading-indicator" style="display:none;"><span class="history-loading-spinner"></span>Loading earlier candles…</div>
         <div id="indicators-legend" class="indicators-legend" style="display:none;"></div>
         <svg id="drawings-layer" class="drawings-layer"></svg>
         <div id="drawings-capture" class="drawings-capture" style="display:none;"></div>
@@ -708,6 +710,7 @@
         <!-- Quotex Exact Floating Timeframe Popover (Available for Mobile & Desktop) -->
         <div class="quotex-timeframe-popover" id="quotex-timeframe-popover" style="display: none;">
           <div class="tf-popover-grid">
+            <button type="button" class="tf-grid-btn" data-tf="3s">3s</button>
             <button type="button" class="tf-grid-btn" data-tf="5s">5s</button>
             <button type="button" class="tf-grid-btn" data-tf="10s">10s</button>
             <button type="button" class="tf-grid-btn" data-tf="15s">15s</button>
@@ -722,6 +725,8 @@
             <button type="button" class="tf-grid-btn" data-tf="1h">1h</button>
             <button type="button" class="tf-grid-btn" data-tf="4h">4h</button>
             <button type="button" class="tf-grid-btn" data-tf="1d">1d</button>
+            <button type="button" class="tf-grid-btn" data-tf="1w">1w</button>
+            <button type="button" class="tf-grid-btn" data-tf="1M">1M</button>
           </div>
         </div>
 

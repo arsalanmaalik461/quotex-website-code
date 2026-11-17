@@ -2904,6 +2904,40 @@ select.input-control__select option {
   z-index: 2;
 }
 
+/* Deep-history paging indicator: small pill, bottom centre of the
+   chart area, shown while an older page of candles is loading. */
+.history-loading-indicator {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(24, 29, 42, 0.92);
+  border: 1px solid #252e42;
+  color: #cfd6e4;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.history-loading-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #3a4560;
+  border-top-color: #4da3ff;
+  animation: history-spin 0.8s linear infinite;
+}
+
+@keyframes history-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Floating Bottom-Left Toolbar (Pencil, Timeframe, Chart Type) */
 .chart-floating-tools-left {
   position: absolute;

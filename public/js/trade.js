@@ -113,9 +113,12 @@
     chartType: 'candles', // 'candles' | 'area' | 'line' | 'bar' | 'heikenashi'
     haCandles: [], // Heiken Ashi transform of state.candles (same times)
     timeframeSec: 60,
+    timeframeKey: '1m', // label sent as ?timeframe= ('3s'..'1M'; '1M' must stay a string — calendar month)
     priceTimer: null,
     marketSyncTimer: null,
     marketRequestSeq: 0,
+    historyExhausted: false, // no older candles left / 3-year boundary reached
+    _pendingHistoryEndTime: null, // endTime of the history page in flight (dupe guard)
     activeTrades: [], // Array of running trades
     accountType: 'demo',
     balance: 10000,
@@ -221,7 +224,7 @@
       id: Number(asset.id),
       symbol: String(asset.symbol || ''),
       name: asset.name || asset.symbol || '',
-      payout: Number(asset.payout || 85),
+      payout: Number(asset.payout || 90),
       flag: asset.flag || '',
       base: Number(asset.base || 1),
       digits: Number(asset.digits || 5),
@@ -241,7 +244,7 @@
     return normalizeAsset({
       id: document.getElementById('asset-id-val')?.value || 1,
       symbol: el.assetSymbol ? el.assetSymbol.textContent.trim() : 'USD/NGN',
-      payout: document.getElementById('asset-payout-val')?.value || 85,
+      payout: document.getElementById('asset-payout-val')?.value || 90,
       flag: el.assetFlag ? el.assetFlag.textContent.trim() : '',
       base: document.getElementById('base-price')?.value || 1,
       digits: document.getElementById('asset-digits-val')?.value || 5,
@@ -364,7 +367,7 @@
     // Read initial active asset from hidden inputs
     const initialId = parseInt(document.getElementById('asset-id-val')?.value || '1');
     const initialSymbol = el.assetSymbol ? el.assetSymbol.textContent.trim() : 'USD/NGN';
-    const initialPayout = parseInt(document.getElementById('asset-payout-val')?.value || '85');
+    const initialPayout = parseInt(document.getElementById('asset-payout-val')?.value || '90');
     const initialFlag = el.assetFlag ? el.assetFlag.textContent.trim() : '🇺🇸🇳🇬';
     const initialBase = parseFloat(document.getElementById('base-price')?.value || '1335.50');
     let initialDigits = parseInt(document.getElementById('asset-digits-val')?.value || '5');
@@ -676,10 +679,22 @@
       state.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
         updateChartTradesOverlay();
         renderDrawings();
-        if (range && range.from < 25 && !isLoadingHistory && state.candles.length > 0) {
+        // Deep-history paging: when the user scrolls within
+        // HISTORY_NEAR_EDGE_BARS of the oldest loaded candle, fetch
+        // the next older page. Guards: one page in flight at a time
+        // (isLoadingHistory), no re-request of the page already in
+        // flight (_pendingHistoryEndTime), and a hard stop at the
+        // 3-year boundary (historyExhausted).
+        if (!range || state.historyExhausted || isLoadingHistory || state.candles.length === 0) return;
+        if (range.from < HISTORY_NEAR_EDGE_BARS) {
           const oldestCandle = state.candles[0];
           if (oldestCandle && oldestCandle.time) {
-            loadPriceData(true, oldestCandle.time);
+            const boundary = historyOldestAllowedTimeFrom(Math.floor(Date.now() / 1000), state.timeframeSec);
+            if (oldestCandle.time <= boundary + (state.timeframeSec || 60)) {
+              state.historyExhausted = true;
+              return;
+            }
+            loadPriceData(true, pageEndTimeForOldest(oldestCandle.time));
           }
         }
       });
@@ -1090,9 +1105,109 @@
     return Number(price).toFixed(prec);
   }
 
+  // --- Deep-history paging (scroll back 3 years on any timeframe) ---
+  // Paging contract with GET /trade/price-data (Team B engine):
+  //   ?timeframe=<key string: '3s'..'1M'>&count=<page size>&to_time=<endTime>
+  // The timeframe is sent as its label string, NOT seconds: '1M' is a
+  // calendar month and has no fixed second count, and '1w' is a Monday
+  // 00:00 UTC week. endTime is an EXCLUSIVE upper bound: every candle
+  // of a page ends at or before it, so the next older page is fetched
+  // with endTime = the oldest loaded candle's `time` — that page's
+  // newest candle ends exactly there, so adjacent pages concatenate
+  // with no gap and no overlap (the merge below dedupes by time too).
+  // The backend engine is deterministic, so it would answer pages
+  // forever into the past; the 3-year window below is the only thing
+  // that stops paging, plus the "page added nothing" exhaustion flag.
+  // @history-paging-start
+  const HISTORY_WINDOW_SEC = 3 * 365.25 * 86400; // 3 years of history
+  const HISTORY_MAX_CANDLES = 50000; // in-memory safety cap (live sync trims past this)
+  const HISTORY_NEAR_EDGE_BARS = 25; // scroll within this many bars of the left edge -> page in
+
+  // Merge two candle arrays into one sorted, time-deduplicated array.
+  // Incoming candles win on a time collision (they are the fresher
+  // backend read) — same rule the live sync already uses.
+  function mergeCandles(existing, incoming) {
+    const byTime = new Map(existing.map(c => [c.time, c]));
+    incoming.forEach(c => byTime.set(c.time, c));
+    return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+  }
+
+  // endTime for the page immediately older than `oldestTime`: the
+  // oldest candle's own `time`. endTime is exclusive (Team B contract),
+  // so this lands the page's newest candle exactly on the bucket
+  // before the oldest loaded one. NOTE: oldestTime - 1 would SKIP one
+  // candle (the newest page candle would end one bucket earlier).
+  function pageEndTimeForOldest(oldestTime) {
+    return oldestTime;
+  }
+
+  // Oldest candle start (seconds) the chart may page back to: 3 years
+  // ago. Fixed-second grids use the epoch grid; for calendar weeks /
+  // months this is an approximation (within a week / a month of the
+  // true 36-week / 36-month line) — it is only a stop trigger.
+  function historyOldestAllowedTimeFrom(nowSec, tfSec) {
+    const tf = Math.max(3, tfSec || 60);
+    return Math.floor((nowSec - HISTORY_WINDOW_SEC) / tf) * tf;
+  }
+
+  // Pages of `pageSize` candles still needed to reach the 3-year
+  // boundary from `oldestTime`. 0 = already there (paging must stop).
+  function historyPagesToBoundary(oldestTime, boundaryTime, pageSize, tfSec) {
+    if (oldestTime <= boundaryTime) return 0;
+    return Math.ceil((oldestTime - boundaryTime) / (pageSize * Math.max(3, tfSec || 60)));
+  }
+
+  // Candles needed to cover a visible window [fromSec, toSec] on a new
+  // timeframe, plus a buffer for the chart's right offset.
+  function historyPageCountForWindow(fromSec, toSec, tfSec) {
+    if (!fromSec || !toSec || toSec <= fromSec) return 0;
+    return Math.ceil((toSec - fromSec) / Math.max(3, tfSec || 60)) + 20;
+  }
+
+  // Page size for a history fetch on this timeframe. Mirrors the
+  // engine's hard caps (monthly 120, weekly 300, hourly+ 2000,
+  // sub-hourly 1000): weekly/monthly pages are small because one page
+  // already spans years; intraday pages stay at 500–1000.
+  function historyPageSizeFor(tfKey, tfSec) {
+    if (tfKey === '1M') return 120;
+    if (tfKey === '1w') return 300;
+    if ((tfSec || 60) >= 3600) return 500;
+    return 1000;
+  }
+
+  // Hard per-request cap the engine applies for this timeframe (used to
+  // size anchored timeframe-switch fetches so the engine never has to
+  // silently clamp them short of the visible window).
+  function historyMaxPageSizeFor(tfKey, tfSec) {
+    if (tfKey === '1M') return 120;
+    if (tfKey === '1w') return 300;
+    return (tfSec || 60) >= 3600 ? 2000 : 1000;
+  }
+
+  // Clamp a saved visible time-range anchor to the data actually
+  // loaded: the left edge lands on the oldest loaded candle when the
+  // window reaches further back than the fetch covered (count cap).
+  // The right edge is kept as-is — the chart tolerates empty space
+  // right of the newest candle. Returns null when the whole window
+  // predates the loaded data.
+  function clampAnchorToLoaded(anchor, oldestTime) {
+    if (!anchor || oldestTime == null) return null;
+    const from = Math.max(anchor.from, oldestTime);
+    if (from > anchor.to) return null;
+    return { from, to: anchor.to };
+  }
+  // @history-paging-end
+
+  function showHistoryLoading(show) {
+    const ind = document.getElementById('history-loading-indicator');
+    if (ind) ind.style.display = show ? 'flex' : 'none';
+  }
+
   function getSmartCandleCount(tfSec) {
     const tf = tfSec || 60;
-    if (tf >= 86400) return 1825; // 5 full years of daily candles
+    if (tf >= 2592000) return 48;   // 1M: 3 years = 36 monthly candles + buffer
+    if (tf >= 604800) return 200;   // 1w: 3 years = 156 weekly candles + buffer
+    if (tf >= 86400) return 1100;   // 1d: 3 years = 1095 daily candles + buffer
     if (tf >= 14400) return 2000; // ~11 months of 4-hour candles
     if (tf >= 3600)  return 1500; // ~2 months of 1-hour candles
     if (tf >= 1800)  return 1200; // ~25 days of 30-min candles
@@ -1124,20 +1239,40 @@
   let isLoadingHistory = false;
 
   // --- Load Candles & Price Engine ---
-  function loadPriceData(isPrepend = false, customEndTime = null) {
+  function loadPriceData(isPrepend = false, customEndTime = null, opts = {}) {
+    // Paging guards (prepend path only): never fetch while a page is in
+    // flight, never re-request the page already in flight, and never
+    // page past the 3-year boundary.
+    if (isPrepend) {
+      if (isLoadingHistory || state.historyExhausted) return;
+      if (customEndTime && state._pendingHistoryEndTime === customEndTime) return;
+    }
+
     // A fresh asset / timeframe load always fits the newest candles once,
     // even when Auto-scrolling is off (that setting only stops the
-    // automatic re-scroll on later live refreshes).
-    if (!isPrepend) state._forceFitNext = true;
+    // automatic re-scroll on later live refreshes) — unless it carries
+    // a visible-range anchor (timeframe switch while viewing history),
+    // in which case the anchor below restores the same era instead.
+    if (!isPrepend) {
+      state.historyExhausted = false;
+      state._pendingHistoryEndTime = null;
+      if (!opts.anchor) state._forceFitNext = true;
+    }
     const symbol = state.selectedAsset ? state.selectedAsset.symbol : 'EUR/USD (OTC)';
     const assetId = state.selectedAsset ? state.selectedAsset.id : 1;
-    const reqCount = isPrepend ? 500 : getSmartCandleCount(state.timeframeSec);
-    let url = `/trade/price-data?symbol=${encodeURIComponent(symbol)}&asset_id=${assetId}&timeframe=${state.timeframeSec}&count=${reqCount}`;
+    const reqCount = isPrepend
+      ? historyPageSizeFor(state.timeframeKey, state.timeframeSec)
+      : (opts.count || getSmartCandleCount(state.timeframeSec));
+    let url = `/trade/price-data?symbol=${encodeURIComponent(symbol)}&asset_id=${assetId}&timeframe=${encodeURIComponent(state.timeframeKey || '1m')}&count=${reqCount}`;
     if (customEndTime) {
       url += `&to_time=${customEndTime}`;
     }
 
-    if (isPrepend) isLoadingHistory = true;
+    if (isPrepend) {
+      isLoadingHistory = true;
+      state._pendingHistoryEndTime = customEndTime;
+      showHistoryLoading(true);
+    }
     const requestSeq = ++state.marketRequestSeq;
 
     fetch(url)
@@ -1155,18 +1290,53 @@
           }));
 
           if (isPrepend && state.candles.length > 0) {
-            const oldestExistingTime = state.candles[0].time;
-            const newOlderCandles = mapped.filter(c => c.time < oldestExistingTime);
-            if (newOlderCandles.length > 0) {
-              state.candles = [...newOlderCandles, ...state.candles];
+            // Merge (sorted + deduped by time) so an overlapping page
+            // can never create duplicates or a gap. Then shift the
+            // visible logical range by the number of prepended bars so
+            // the user keeps looking at the same candles instead of
+            // the view jumping when indices shift.
+            const beforeCount = state.candles.length;
+            const visibleBefore = state.chart ? state.chart.timeScale().getVisibleLogicalRange() : null;
+            state.candles = mergeCandles(state.candles, mapped);
+            const added = state.candles.length - beforeCount;
+            if (added > 0) {
               updateSeriesData(false);
+              if (visibleBefore && state.chart) {
+                try {
+                  state.chart.timeScale().setVisibleLogicalRange({
+                    from: visibleBefore.from + added,
+                    to: visibleBefore.to + added,
+                  });
+                } catch (e) {}
+              }
+              // Boundary check: the merged oldest candle at/before the
+              // 3-year line means there is nothing older worth paging.
+              const boundary = historyOldestAllowedTimeFrom(Math.floor(Date.now() / 1000), state.timeframeSec);
+              if (state.candles[0].time <= boundary + (state.timeframeSec || 60)) {
+                state.historyExhausted = true;
+              }
+            } else {
+              // A page that adds no new candles means the backend has
+              // no older data for this window — stop paging.
+              state.historyExhausted = true;
             }
           } else {
-            state.candles = mapped;
-            updateSeriesData(true);
+            state.candles = mergeCandles([], mapped);
+            if (opts.anchor) {
+              updateSeriesData(false);
+              const anchored = clampAnchorToLoaded(opts.anchor, state.candles[0].time);
+              if (anchored && state.chart) {
+                try { state.chart.timeScale().setVisibleRange(anchored); } catch (e) {}
+              }
+            } else {
+              updateSeriesData(true);
+            }
             state.currentPrice = state.candles[state.candles.length - 1].close;
             updatePriceLabel();
           }
+        } else if (isPrepend) {
+          // Empty page: nothing older exists for this window.
+          state.historyExhausted = true;
         }
       })
       .catch(() => {
@@ -1175,7 +1345,9 @@
       })
       .finally(() => {
         if (isPrepend) {
-          setTimeout(() => { isLoadingHistory = false; }, 800);
+          isLoadingHistory = false;
+          state._pendingHistoryEndTime = null;
+          showHistoryLoading(false);
         }
       });
   }
@@ -1185,7 +1357,7 @@
 
     const symbol = state.selectedAsset.symbol || 'EUR/USD (OTC)';
     const assetId = state.selectedAsset.id || 1;
-    const url = `/trade/price-data?symbol=${encodeURIComponent(symbol)}&asset_id=${assetId}&timeframe=${state.timeframeSec}&count=5`;
+    const url = `/trade/price-data?symbol=${encodeURIComponent(symbol)}&asset_id=${assetId}&timeframe=${encodeURIComponent(state.timeframeKey || '1m')}&count=5`;
     const requestSeq = state.marketRequestSeq;
 
     fetch(url)
@@ -1205,9 +1377,22 @@
         const byTime = new Map(state.candles.map(c => [c.time, c]));
         mapped.forEach(candle => byTime.set(candle.time, candle));
         state.candles = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
-        const maxCandles = getSmartCandleCount(state.timeframeSec);
-        if (state.candles.length > maxCandles) {
-          state.candles = state.candles.slice(state.candles.length - maxCandles);
+        // Memory cap only: the old per-timeframe trim (e.g. 1000 candles
+        // on 1m) deleted history the user had scrolled back to. Only
+        // trim past HISTORY_MAX_CANDLES, and shift the visible logical
+        // range by the dropped count so the view does not jump.
+        if (state.candles.length > HISTORY_MAX_CANDLES) {
+          const drop = state.candles.length - HISTORY_MAX_CANDLES;
+          const range = state.chart ? state.chart.timeScale().getVisibleLogicalRange() : null;
+          state.candles = state.candles.slice(drop);
+          if (range && state.chart) {
+            try {
+              state.chart.timeScale().setVisibleLogicalRange({
+                from: Math.max(0, range.from - drop),
+                to: range.to - drop,
+              });
+            } catch (e) {}
+          }
         }
 
         state.currentPrice = state.candles[state.candles.length - 1].close;
@@ -1236,7 +1421,7 @@
     const sym = state.selectedAsset?.symbol || 'EUR/USD (OTC)';
     const seed = getSymbolSeed(sym);
     const now = getNowSec();
-    const tf = Math.max(5, state.timeframeSec || 60);
+    const tf = Math.max(3, state.timeframeSec || 60);
     const count = getSmartCandleCount(tf);
     const currentCandleStart = Math.floor(now / tf) * tf;
     const candles = [];
@@ -2642,7 +2827,7 @@
     const last = state.candles[state.candles.length - 1];
     const now = getNowSec();
     const prec = getPrecision(newClose);
-    const tf = Math.max(5, state.timeframeSec || 60);
+    const tf = Math.max(3, state.timeframeSec || 60);
     const currentCandleStart = Math.floor(now / tf) * tf;
 
     if (currentCandleStart > last.time) {
@@ -2728,7 +2913,7 @@
 
   // --- Investment Amount & Percent Mode ---
   function updatePayoutCalculation() {
-    const payoutPct = state.selectedAsset ? state.selectedAsset.payout : 82;
+    const payoutPct = state.selectedAsset ? state.selectedAsset.payout : 90;
     let actualInvestment = state.investment;
     if (state.investMode === 'percent') {
       // Percent of the real account balance shown in the header —
@@ -3287,7 +3472,7 @@
           // shape doPlaceTrade() uses for an instant trade.
           const asset = (state.selectedAsset && state.selectedAsset.id === t.asset_id)
             ? state.selectedAsset
-            : { id: t.asset_id, symbol: t.symbol, payout: 85 };
+            : { id: t.asset_id, symbol: t.symbol, payout: 90 };
           state.activeTrades.push({
             trade_id: t.trade_id,
             asset: asset,
@@ -4166,7 +4351,7 @@
   // authoritative at sell time; this is the live preview on the button.
   function calculateEarlySellValue(trade, currentPrice) {
     const investment = parseFloat(trade.investment) || 0;
-    const payoutPct = parseFloat(trade.asset?.payout ?? 82) || 0;
+    const payoutPct = parseFloat(trade.asset?.payout ?? 90) || 0;
     const grossPayout = investment * (1 + payoutPct / 100);
     const openPrice = parseFloat(trade.open_price) || 0;
     const price = (currentPrice !== undefined && currentPrice !== null && !Number.isNaN(parseFloat(currentPrice)))
@@ -4301,7 +4486,7 @@
           const openTimeStr = `<span class="tz-time" data-ts="${Math.round(openAtMs / 1000)}">${formatTimeInTz(new Date(openAtMs))}</span>`;
           const expiryStr = `<span class="tz-time" data-ts="${Math.round(trade.expires_at / 1000)}">${formatTimeInTz(new Date(trade.expires_at))}</span>`;
           const durStr = `${String(Math.floor(durSecs / 60)).padStart(2,'0')}:${String(durSecs % 60).padStart(2,'0')}`;
-          const payoutPct = trade.asset.payout || 82;
+          const payoutPct = trade.asset.payout || 90;
 
           const item = document.createElement('div');
           item.className = 'qx-deal-card active-deal';
@@ -4340,7 +4525,7 @@
             </div>
             <div class="deal-card-details">
               <div class="deal-detail-row"><span>ID:</span><b>${trade.trade_id || trade.id || ''}</b></div>
-              <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 82}%</b></div>
+              <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 90}%</b></div>
               <div class="deal-detail-row"><span>Open Price:</span><b>${trade.open_price}</b></div>
               <div class="deal-detail-row"><span>Current Price:</span><b>${state.currentPrice}</b></div>
               <div class="deal-detail-row"><span>Open time:</span><b>${openTimeStr}</b></div>
@@ -4535,7 +4720,7 @@
     const durStr = `${String(Math.floor(durSec / 60)).padStart(2, '0')}:${String(durSec % 60).padStart(2, '0')}`;
     const openAtMs = Date.now() - durSec * 1000;
     const openTimeStr = `<span class="tz-time" data-ts="${Math.round(openAtMs / 1000)}">${formatTimeInTz(new Date(openAtMs))}</span>`;
-    const payoutPct = trade.asset.payout || 82;
+    const payoutPct = trade.asset.payout || 90;
 
     item.innerHTML = `
       <div class="deal-card-main">
@@ -4564,7 +4749,7 @@
       </div>
       <div class="deal-card-details">
         <div class="deal-detail-row"><span>ID:</span><b>${trade.trade_id || trade.id || ''}</b></div>
-        <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 82}%</b></div>
+        <div class="deal-detail-row"><span>Trade Pair:</span><b>${trade.asset.symbol} ${trade.asset.payout || 90}%</b></div>
         <div class="deal-detail-row"><span>Open Price:</span><b>${trade.open_price}</b></div>
         <div class="deal-detail-row"><span>Close Price:</span><b>${resultData.close_price ?? state.currentPrice}</b></div>
         <div class="deal-detail-row"><span>Open time:</span><b>${openTimeStr}</b></div>
@@ -4746,7 +4931,15 @@
   document.getElementById('btn-chart-area')?.addEventListener('click', () => setChartType('area'));
 
   // --- Quotex Candle Timeframes Map ---
+  // Full set (Team C): 3s, 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 4h, 1d,
+  // 1w, 1M. The extra in-between steps (10s, 2m, 3m, 10m) predate this
+  // and are kept. The label is what is sent as ?timeframe= (Team B
+  // engine resolves keys: '1M' is a calendar month, '1w' a Monday
+  // week). The seconds value is only for local UI math (countdown,
+  // secondsVisible); for 1w/1M it is an approximation (604800s /
+  // 2592000s) — the candle countdown special-cases those two.
   const TF_MAP = {
+    '3s': 3,
     '5s': 5,
     '10s': 10,
     '15s': 15,
@@ -4760,7 +4953,9 @@
     '30m': 1800,
     '1h': 3600,
     '4h': 14400,
-    '1d': 86400
+    '1d': 86400,
+    '1w': 604800,
+    '1M': 2592000,
   };
   document.querySelectorAll('.tf-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -5150,13 +5345,40 @@
     const tfBtn = document.getElementById('btn-tf-toggle');
     if (tfBtn) tfBtn.textContent = tf;
 
-    state.timeframeSec = TF_MAP[tf] || 60;
+    const newTf = TF_MAP[tf] || 60;
+    // Anchor on the visible time range: when the user is looking at
+    // history (visible right edge behind "now"), the switch fetches
+    // candles covering that same window on the new timeframe and lands
+    // back on the same era instead of jumping to the latest candles.
+    // When the user is at the latest, this is a plain fresh load.
+    let anchor = null;
+    let anchorCount = null;
+    if (state.chart && newTf !== state.timeframeSec) {
+      try {
+        const vis = state.chart.timeScale().getVisibleRange();
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (vis && vis.from && vis.to && vis.to < nowSec) {
+          anchor = { from: vis.from, to: vis.to };
+          // Engine caps count per timeframe (monthly 120, weekly 300,
+          // hourly+ 2000, sub-hourly 1000); clampAnchorToLoaded()
+          // handles the case where the window is wider than the fetch.
+          anchorCount = Math.min(historyMaxPageSizeFor(tf, newTf), historyPageCountForWindow(vis.from, vis.to, newTf));
+        }
+      } catch (e) {}
+    }
+
+    state.timeframeSec = newTf;
+    state.timeframeKey = tf;
     if (state.chart) {
       state.chart.applyOptions({
         timeScale: { secondsVisible: state.timeframeSec <= 60 }
       });
     }
-    loadPriceData();
+    if (anchor) {
+      loadPriceData(false, Math.floor(anchor.to), { anchor, count: anchorCount });
+    } else {
+      loadPriceData();
+    }
     updateCandleCountdown();
   };
 
@@ -5177,10 +5399,29 @@
 
     const tf = state.timeframeSec || 60;
     const nowSec = Math.floor((Date.now() + serverOffset) / 1000);
-    const secRemaining = tf - (nowSec % tf);
+    // Seconds until the current candle closes. Fixed-second frames use
+    // the epoch grid; weeks close next Monday 00:00 UTC and months on
+    // the 1st at 00:00 UTC (same calendar buckets as the engine).
+    const secRemaining = (function () {
+      if (state.timeframeKey === '1M') {
+        const d = new Date(nowSec * 1000);
+        return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) / 1000) - nowSec;
+      }
+      if (state.timeframeKey === '1w') {
+        const d = new Date(nowSec * 1000);
+        const dow = d.getUTCDay(); // 0 = Sunday .. 6 = Saturday
+        const daysToMonday = dow === 1 ? 7 : (8 - dow) % 7;
+        return Math.floor(nowSec / 86400) * 86400 + daysToMonday * 86400 - nowSec;
+      }
+      return tf - (nowSec % tf);
+    })();
     const mm = Math.floor(secRemaining / 60);
     const ss = secRemaining % 60;
-    badge.textContent = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    // Sub-hour timeframes show mm:ss; daily/weekly/monthly candles
+    // would otherwise render a 5-digit minute count.
+    badge.textContent = mm >= 60
+      ? `${Math.floor(mm / 60)}h ${String(mm % 60).padStart(2, '0')}m`
+      : `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 
     if (state.series && state.currentPrice) {
       try {
@@ -5388,7 +5629,7 @@
         id: sig.asset_id || 999,
         symbol: sig.pair_name,
         name: sig.pair_name,
-        payout: sig.payout_percent || 85,
+        payout: sig.payout_percent || 90,
         base: 1335.50,
         digits: 2,
         type: 'forex'

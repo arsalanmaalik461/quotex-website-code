@@ -38,8 +38,8 @@
                 <input type="text" name="category" class="form-control" value="{{ old('category', $asset?->category) }}" placeholder="e.g. Majors, DeFi, Metals">
             </div>
             <div class="form-group">
-                <label class="form-label">Payout % (e.g. 85) *</label>
-                <input type="number" name="payout_percent" class="form-control" value="{{ old('payout_percent', $asset?->payout_percent ?? 85) }}" min="1" max="99" required>
+                <label class="form-label">Payout % (e.g. 90) *</label>
+                <input type="number" name="payout_percent" class="form-control" value="{{ old('payout_percent', $asset?->payout_percent ?? 90) }}" min="1" max="99" required>
             </div>
             <div class="form-group">
                 <label class="form-label">Starting / Base Market Price (optional)</label>

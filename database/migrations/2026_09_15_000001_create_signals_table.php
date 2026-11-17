@@ -18,7 +18,7 @@ return new class extends Migration
                 $table->integer('duration_seconds')->default(900); // 900s = 15m
                 $table->timestamp('start_time')->useCurrent();
                 $table->timestamp('expires_at')->nullable();
-                $table->decimal('payout_percent', 5, 2)->default(85.00);
+                $table->decimal('payout_percent', 5, 2)->default(90.00);
                 $table->boolean('is_active')->default(true);
                 $table->enum('status', ['active', 'expired', 'win', 'loss'])->default('active');
                 $table->text('notes')->nullable();

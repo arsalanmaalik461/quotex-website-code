@@ -12,7 +12,7 @@ return new class extends Migration
             $table->id();
             $table->string('symbol');
             $table->string('name');
-            $table->integer('payout_percent')->default(85);
+            $table->integer('payout_percent')->default(90);
             $table->enum('type', ['forex', 'crypto', 'commodity', 'index'])->default('forex');
             $table->boolean('is_otc')->default(false);
             $table->boolean('is_active')->default(true);

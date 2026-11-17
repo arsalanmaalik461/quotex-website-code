@@ -586,7 +586,7 @@ class AccountController extends Controller
                 foreach ($allTrades as $t) {
                     fputcsv($file, [
                         $t->asset->symbol ?? 'USD/JPY (OTC)',
-                        ($t->asset->payout_rate ?? 92) . '%',
+                        ($t->asset->payout_rate ?? 90) . '%',
                         strtoupper($t->direction),
                         $t->investment . '$',
                         $t->open_price,
