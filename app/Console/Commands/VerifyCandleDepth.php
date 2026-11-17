@@ -113,14 +113,22 @@ class VerifyCandleDepth extends Command
         $expected = min($page, OtcPriceEngine::maxPageSizeFor($key));
 
         // Live page (includes the forming candle).
+        // Anchor the live checks to THIS timeframe's generation moment:
+        // handle()'s $now is captured once at command start, but each
+        // live page takes seconds to generate, so by the later
+        // timeframes the forming close (price at generation time) falls
+        // outside isLiveTick()'s window around the stale $now and the
+        // check fails intermittently — a race in the check, not the
+        // engine (the live chart itself renders fine).
+        $liveNow = time();
         $live = OtcPriceEngine::generateCandles($asset, $page, $key, null);
-        $problems = $this->checkPage($live, $key, $expected, true, $now);
+        $problems = $this->checkPage($live, $key, $expected, true, $liveNow);
         $formingClose = end($live)['close'] ?? null;
-        if ($formingClose !== null && !$this->isLiveTick($asset, $formingClose, $now)) {
+        if ($formingClose !== null && !$this->isLiveTick($asset, $formingClose, $liveNow)) {
             $problems[] = 'forming close is not the live tick price';
         }
         $formingStart = end($live)['time'] ?? null;
-        if ($formingStart !== OtcPriceEngine::candleStartForTimestamp($now, $key)) {
+        if ($formingStart !== OtcPriceEngine::candleStartForTimestamp($liveNow, $key)) {
             $problems[] = 'forming candle does not start at the current bucket';
         }
 
