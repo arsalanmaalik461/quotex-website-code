@@ -670,6 +670,15 @@
         timeVisible: true,
         secondsVisible: state.timeframeSec <= 60,
       },
+      // P0-5 (2026-11-18): the chart's own time axis used to render in
+      // UTC, so every label was 5h wrong for a PKT user while the clock
+      // and trade times already followed the selected timezone. The
+      // library renders candle times in this zone (lightweight-charts
+      // 4.x localization.timeZone); applyTimezone() re-applies it
+      // whenever the user changes zone.
+      localization: {
+        timeZone: getSelectedTimeZone(),
+      },
       watermark: { visible: false },
     });
 
@@ -2425,6 +2434,11 @@
     });
     updateDateBanner();
     renderTimeDisplay();
+    // P0-5: re-apply the chart axis timezone when the user changes
+    // zone (initChart sets it at creation; this keeps it in sync).
+    try {
+      if (state.chart) state.chart.applyOptions({ localization: { timeZone: getSelectedTimeZone() } });
+    } catch (e) {}
     const curTime = document.getElementById('pending-cur-time-lbl');
     if (curTime) curTime.textContent = formatTimeInTz(new Date());
     // Pending-order rows embed their trigger time; re-render the list so

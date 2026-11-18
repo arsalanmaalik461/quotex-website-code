@@ -340,12 +340,14 @@
 
 @section('content')
 @php
-  // If no database tournaments found, provide default Quotex tournaments
+  // P0-4 (2026-11-18): no hardcoded fallback tournaments. When the
+  // database has none, the page shows an empty state instead of cards
+  // linking to ids 1/2/3 that do not exist.
   $hasDbActive = isset($activeTournaments) && $activeTournaments->isNotEmpty();
   $hasDbCompleted = isset($completedTournaments) && $completedTournaments->isNotEmpty();
 
-  $activeCount = $hasDbActive ? $activeTournaments->count() : 3;
-  $completedCount = $hasDbCompleted ? $completedTournaments->count() : 3;
+  $activeCount = $hasDbActive ? $activeTournaments->count() : 0;
+  $completedCount = $hasDbCompleted ? $completedTournaments->count() : 0;
 @endphp
 
 <div class="tournaments-wrapper">
@@ -400,90 +402,7 @@
         </div>
       @endforeach
     @else
-      <!-- Default Quotex Active Tournaments -->
-      <div class="qx-tournament-card">
-        <div class="qx-tcard-top">
-          <div class="qx-tcard-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span>Until start: 1 day(s)</span>
-          </div>
-          <div class="qx-tcard-prize-box">
-            <div class="qx-tcard-prize-lbl">Prize pool</div>
-            <div class="qx-tcard-prize-val">7 500 $</div>
-          </div>
-        </div>
-        <div class="qx-tcard-title">Crazy Wednesday</div>
-        <div class="qx-tcard-stats-row">
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">10 $</div>
-            <div class="qx-tcard-stat-lbl">Entry fee</div>
-          </div>
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">1 day</div>
-            <div class="qx-tcard-stat-lbl">Duration</div>
-          </div>
-        </div>
-        <a href="{{ route('tournament.detail', 1) }}" class="qx-tcard-btn" style="text-decoration:none;">
-          <span>Details</span>
-          <span class="btn-info-icon">i</span>
-        </a>
-      </div>
-
-      <div class="qx-tournament-card">
-        <div class="qx-tcard-top">
-          <div class="qx-tcard-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span>Until start: 3 day(s)</span>
-          </div>
-          <div class="qx-tcard-prize-box">
-            <div class="qx-tcard-prize-lbl">Prize pool</div>
-            <div class="qx-tcard-prize-val">1 000 $</div>
-          </div>
-        </div>
-        <div class="qx-tcard-title">Free Friday</div>
-        <div class="qx-tcard-stats-row">
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">0 $</div>
-            <div class="qx-tcard-stat-lbl">Entry fee</div>
-          </div>
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">1 day</div>
-            <div class="qx-tcard-stat-lbl">Duration</div>
-          </div>
-        </div>
-        <a href="{{ route('tournament.detail', 2) }}" class="qx-tcard-btn" style="text-decoration:none;">
-          <span>Details</span>
-          <span class="btn-info-icon">i</span>
-        </a>
-      </div>
-
-      <div class="qx-tournament-card">
-        <div class="qx-tcard-top">
-          <div class="qx-tcard-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span>Until start: 4 day(s)</span>
-          </div>
-          <div class="qx-tcard-prize-box">
-            <div class="qx-tcard-prize-lbl">Prize pool</div>
-            <div class="qx-tcard-prize-val">5 000 $</div>
-          </div>
-        </div>
-        <div class="qx-tcard-title">Weekend Battle</div>
-        <div class="qx-tcard-stats-row">
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">1 $</div>
-            <div class="qx-tcard-stat-lbl">Entry fee</div>
-          </div>
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">2 days</div>
-            <div class="qx-tcard-stat-lbl">Duration</div>
-          </div>
-        </div>
-        <a href="{{ route('tournament.detail', 3) }}" class="qx-tcard-btn" style="text-decoration:none;">
-          <span>Details</span>
-          <span class="btn-info-icon">i</span>
-        </a>
-      </div>
+      <div class="qx-tournament-empty" style="grid-column: 1 / -1; padding: 32px 16px; text-align: center; color: #8b9ab4;">No active tournaments right now. Check back soon.</div>
     @endif
   </div>
 
@@ -519,60 +438,7 @@
         </div>
       @endforeach
     @else
-      <!-- Default Completed Tournaments -->
-      <div class="qx-tournament-card">
-        <div class="qx-tcard-top">
-          <div class="qx-tcard-badge completed-badge">
-            <span>Finished</span>
-          </div>
-          <div class="qx-tcard-prize-box">
-            <div class="qx-tcard-prize-lbl">Prize pool</div>
-            <div class="qx-tcard-prize-val">7 500 $</div>
-          </div>
-        </div>
-        <div class="qx-tcard-title">Crazy Wednesday</div>
-        <div class="qx-tcard-stats-row">
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">10 $</div>
-            <div class="qx-tcard-stat-lbl">Entry fee</div>
-          </div>
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">1 day</div>
-            <div class="qx-tcard-stat-lbl">Duration</div>
-          </div>
-        </div>
-        <a href="{{ route('tournament.detail', 1) }}" class="qx-tcard-btn" style="text-decoration:none;">
-          <span>Details</span>
-          <span class="btn-info-icon">i</span>
-        </a>
-      </div>
-
-      <div class="qx-tournament-card">
-        <div class="qx-tcard-top">
-          <div class="qx-tcard-badge completed-badge">
-            <span>Finished</span>
-          </div>
-          <div class="qx-tcard-prize-box">
-            <div class="qx-tcard-prize-lbl">Prize pool</div>
-            <div class="qx-tcard-prize-val">5 000 $</div>
-          </div>
-        </div>
-        <div class="qx-tcard-title">Weekend Battle</div>
-        <div class="qx-tcard-stats-row">
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">1 $</div>
-            <div class="qx-tcard-stat-lbl">Entry fee</div>
-          </div>
-          <div class="qx-tcard-stat">
-            <div class="qx-tcard-stat-val">2 days</div>
-            <div class="qx-tcard-stat-lbl">Duration</div>
-          </div>
-        </div>
-        <a href="{{ route('tournament.detail', 3) }}" class="qx-tcard-btn" style="text-decoration:none;">
-          <span>Details</span>
-          <span class="btn-info-icon">i</span>
-        </a>
-      </div>
+      <div class="qx-tournament-empty" style="grid-column: 1 / -1; padding: 32px 16px; text-align: center; color: #8b9ab4;">No completed tournaments yet.</div>
     @endif
   </div>
 </div>

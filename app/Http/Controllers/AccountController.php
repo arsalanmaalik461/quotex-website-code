@@ -240,7 +240,17 @@ class AccountController extends Controller
             $proofPath = 'uploads/deposits/' . $filename;
         }
 
-        $deposit = Transaction::create([
+        // P0-3 (2026-11-18): the promo bonus is NOT credited here. It
+        // used to be credited immediately while the deposit was still
+        // pending, so a user could deposit with a promo code, withdraw
+        // the bonus at once, and keep it even if the admin later
+        // rejected the deposit for a fake proof. The promo code and
+        // bonus amount are now stored on the deposit row (migration
+        // 2026_11_18_000014) and the bonus is credited only when the
+        // admin approves the deposit — see
+        // AdminTransactionController::approveTransaction(). A deposit
+        // rejected before approval never mints a bonus.
+        $depositData = [
             'user_id'           => $user->id,
             'account_type'      => 'live',
             'type'              => 'deposit',
@@ -254,60 +264,24 @@ class AccountController extends Controller
             'wallet_address'    => $paymentMethod->wallet_address,
             'status'            => 'pending',
             'notes'             => 'Awaiting admin verification.',
-        ]);
-
-        // Credit the promo bonus to the same (live) account as the deposit
-        // and record it as its own 'bonus' transaction. This runs in its
-        // own try/catch so a bonus failure (e.g. the 'bonus' transaction
-        // type not yet enabled in the DB enum) never blocks the deposit
-        // itself; the user is told instead.
-        // NOTE: the deposit itself is still pending admin review while the
-        // bonus is credited immediately. If the deposit is later rejected
-        // the bonus stays in the balance unless an admin reverses the
-        // linked bonus row (see its notes for the deposit id). The correct
-        // long-term placement is to credit the bonus when the deposit is
-        // approved (AdminTransactionController::approveTransaction), which
-        // is admin code and out of scope for this change.
-        $bonusFailed = false;
+        ];
         if ($appliedPromo !== null && $promoBonus > 0) {
-            try {
-                DB::transaction(function () use ($user, $appliedPromo, $promoBonus, $deposit) {
-                    $lockedUser = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
-                    $lockedUser->live_balance = Money::add($lockedUser->live_balance, $promoBonus);
-                    $lockedUser->save();
-
-                    Transaction::create([
-                        'user_id'      => $user->id,
-                        'account_type' => 'live',
-                        'type'         => 'bonus',
-                        'amount'       => $promoBonus,
-                        'method'       => 'Promo code ' . $appliedPromo->code,
-                        'status'       => 'approved',
-                        'processed_at' => now(),
-                        'notes'        => 'Promo bonus ' . $appliedPromo->code . ' (' . $appliedPromo->formatted_name . ') for deposit #' . $deposit->id . ' of $' . number_format((float) $deposit->amount, 2) . '.',
-                    ]);
-                });
-            } catch (\Throwable $e) {
-                $bonusFailed = true;
-                Log::error('Promo bonus credit failed for deposit #' . $deposit->id . ': ' . $e->getMessage(), [
-                    'user_id'    => $user->id,
-                    'promo_code' => $appliedPromo->code,
-                    'bonus'      => $promoBonus,
-                ]);
+            $depositData['notes'] .= ' Promo bonus ' . $appliedPromo->code . ' ($' . number_format($promoBonus, 2) . ') pending — credited only when this deposit is approved.';
+            if (Schema::hasColumn('transactions', 'promo_code')) {
+                $depositData['promo_code'] = $appliedPromo->code;
+            }
+            if (Schema::hasColumn('transactions', 'promo_bonus_amount')) {
+                $depositData['promo_bonus_amount'] = $promoBonus;
             }
         }
+        $deposit = Transaction::create($depositData);
 
         $successMessage = 'Deposit request of $' . number_format($amount, 2) . ' submitted successfully! It is pending admin review and will be added to your balance once verified.';
-        if ($appliedPromo !== null && $promoBonus > 0 && !$bonusFailed) {
-            $successMessage .= ' Promo bonus of $' . number_format($promoBonus, 2) . ' from code ' . $appliedPromo->code . ' has been credited to your live balance.';
+        if ($appliedPromo !== null && $promoBonus > 0) {
+            $successMessage .= ' Promo bonus of $' . number_format($promoBonus, 2) . ' from code ' . $appliedPromo->code . ' will be credited to your live balance once this deposit is approved.';
         }
 
-        $redirect = redirect()->route('deposit')->with('success', $successMessage);
-        if ($bonusFailed) {
-            $redirect->with('warning', 'Your deposit was submitted, but the $' . number_format($promoBonus, 2) . ' bonus from promo code ' . $appliedPromo->code . ' could not be credited due to a system issue. Please contact support and mention promo code ' . $appliedPromo->code . ' and deposit #' . $deposit->id . '.');
-        }
-
-        return $redirect;
+        return redirect()->route('deposit')->with('success', $successMessage);
     }
 
     public function withdrawal()
@@ -1133,30 +1107,17 @@ class AccountController extends Controller
             } catch (\Throwable $e) {}
         }
 
+        // P0-4 (2026-11-18): no fallback. The old code returned
+        // Tournament::first() — or a synthetic "Crazy Wednesday" with
+        // id 933 that exists in no database — when the requested id
+        // was not found. The detail view then rendered a live Join
+        // button for that id, and the register route (implicit
+        // route-model binding) 404s for id 933; worse, when the table
+        // was non-empty the fallback registered (and charged) the user
+        // for a different tournament than the card they clicked.
         $tournament = Tournament::find($id);
         if (!$tournament) {
-            // Fallback to first tournament or default Crazy Wednesday
-            $tournament = Tournament::first() ?? new Tournament([
-                'id'                 => 933,
-                'title'              => 'Crazy Wednesday',
-                'prize_pool'         => 7500.00,
-                'entry_fee'          => 10.00,
-                'rebuy_cost'         => 10.00,
-                'number_of_rebuys'   => 100,
-                'duration'           => '1 day',
-                'timezone_label'     => 'UTC+05:00',
-                'badge_text'         => 'Until start: 1 day(s)',
-                'status'             => 'active',
-                'is_active'          => true,
-                'description'        => 'Total prize pool is $7500. To participate you need to register and pay the entrance fee, after that $100 will be deposited to a special tournament account. Initial conditions in the tournament are the same for all participants. During one day, participants need to make trades on the tournament account. And 5 traders with the biggest tournament balance will become winners.',
-                'prize_distribution' => [
-                    ['place' => '1 Place', 'prize' => '3000$'],
-                    ['place' => '2 Place', 'prize' => '2000$'],
-                    ['place' => '3 Place', 'prize' => '1000$'],
-                    ['place' => '4 Place', 'prize' => '900$'],
-                    ['place' => '5 Place', 'prize' => '600$'],
-                ]
-            ]);
+            abort(404);
         }
 
         return view('account.tournament_detail', compact('user', 'tournament'));

@@ -192,14 +192,21 @@ class TradeResultService
             // a forced trade sold early while the market is against the
             // forced side pays the market value; the result still counts
             // as the forced outcome.
+            // P0-2 (2026-11-18): the client-supplied close price is NEVER
+            // trusted here. It used to decide both the win/loss result
+            // and the buyout price, so a live user could POST
+            // early_sell=1 with a far in-the-money close_price and be
+            // paid near-full payout. The server price is the only price:
+            // simulatePrice() is the same source the normal settlement
+            // path uses. $clientClosePrice is kept in the signature for
+            // callers but is deliberately ignored.
+            $serverPrice = OtcPriceEngine::simulatePrice($trade->asset);
             $forcedSide = OtcPriceEngine::forcedSideForTrade($trade, $trade->asset);
             if ($forcedSide !== null) {
                 $isWinning = $trade->direction === $forcedSide;
                 $closePrice = OtcPriceEngine::steeringTargetPrice($trade, $forcedSide);
             } else {
-                $closePrice = $clientClosePrice && $clientClosePrice > 0
-                    ? round($clientClosePrice, OtcPriceEngine::getPrecision((float) $trade->open_price))
-                    : OtcPriceEngine::simulatePrice($trade->asset);
+                $closePrice = $serverPrice;
                 $isWinning = $trade->direction === 'up'
                     ? $closePrice > (float) $trade->open_price
                     : $closePrice < (float) $trade->open_price;
@@ -210,9 +217,9 @@ class TradeResultService
             // and the payout %. Replaces the old flat formula (15% of
             // the investment when winning, 5% when losing, rounded to
             // whole dollars). See calculateEarlySellPayout().
-            $marketPrice = $clientClosePrice && $clientClosePrice > 0
-                ? round($clientClosePrice, OtcPriceEngine::getPrecision((float) $trade->open_price))
-                : OtcPriceEngine::simulatePrice($trade->asset);
+            // Priced off the server price (see P0-2 above), never the
+            // client-supplied price.
+            $marketPrice = $serverPrice;
             $buyout = self::calculateEarlySellPayout($trade, $marketPrice);
             $result = $isWinning ? 'win' : 'loss';
 

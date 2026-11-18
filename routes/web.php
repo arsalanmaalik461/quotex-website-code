@@ -89,11 +89,28 @@ Route::middleware('auth')->group(function () {
 });
 Route::get('/email/verify/{id}/{hash}', [AccountController::class, 'verifyEmail'])->name('verification.verify')->middleware('signed');
 Route::get('/profile/images/{any}', function ($any) {
-    $path = public_path('images/' . $any);
-    if (file_exists($path)) {
-        return response()->file($path);
+    // P0-1 (2026-11-18): this route used to serve any path under
+    // public/images/ with no sanitisation, so an encoded request such
+    // as /profile/images/%2e%2e%2f%2e%2e%2f.env resolved to the
+    // project-root .env (DB password, APP_KEY, gateway secrets).
+    // Its only legitimate use is a plain image filename in
+    // public/images/ (e.g. logo-dark.svg on the login page), so:
+    // reject any path with a directory separator, allow only image
+    // extensions, and verify the resolved real path stays inside
+    // public/images/ before serving it.
+    if ($any !== basename($any)) {
+        abort(404);
     }
-    abort(404);
+    $extension = strtolower(pathinfo($any, PATHINFO_EXTENSION));
+    if (!in_array($extension, ['svg', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'ico'], true)) {
+        abort(404);
+    }
+    $base = realpath(public_path('images'));
+    $path = $base ? realpath($base . DIRECTORY_SEPARATOR . $any) : false;
+    if ($path === false || !str_starts_with($path, $base . DIRECTORY_SEPARATOR)) {
+        abort(404);
+    }
+    return response()->file($path);
 })->where('any', '.*');
 
 Route::middleware('auth')->group(function () {

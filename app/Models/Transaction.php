@@ -20,6 +20,10 @@ class Transaction extends Model
         'converted_amount',
         'currency',
         'payment_method_id',
+        // P0-3: pending promo bonus for a deposit, credited only on
+        // admin approval (see AdminTransactionController).
+        'promo_code',
+        'promo_bonus_amount',
         'provider',
         'provider_method',
         'merchant_order_id',
@@ -43,6 +47,7 @@ class Transaction extends Model
             'processed_at' => 'datetime',
             'fee_amount' => 'decimal:2',
             'net_amount' => 'decimal:2',
+            'promo_bonus_amount' => 'decimal:2',
         ];
     }
 

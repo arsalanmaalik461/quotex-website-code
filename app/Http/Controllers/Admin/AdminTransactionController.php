@@ -11,6 +11,7 @@ use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class AdminTransactionController extends Controller
 {
@@ -239,6 +240,36 @@ class AdminTransactionController extends Controller
                 $user->save();
             }
 
+            // P0-3 (2026-11-18): reverse a promo bonus that was already
+            // credited for this deposit. That only happens for deposits
+            // made before this fix, when the bonus was credited
+            // immediately while the deposit was still pending. The bonus
+            // row is linked by its notes ("for deposit #<id>"). The
+            // balance is floored at zero: if the user already spent or
+            // withdrew part of the bonus, the reversal takes only what
+            // is left rather than driving the balance negative.
+            if ($lockedTransaction->type === 'deposit') {
+                $linkedBonuses = Transaction::where('user_id', $lockedTransaction->user_id)
+                    ->where('type', 'bonus')
+                    ->where('status', 'approved')
+                    ->where('notes', 'like', '%for deposit #' . $lockedTransaction->id . '%')
+                    ->lockForUpdate()
+                    ->get();
+                if ($linkedBonuses->isNotEmpty()) {
+                    $user = User::whereKey($lockedTransaction->user_id)->lockForUpdate()->firstOrFail();
+                    foreach ($linkedBonuses as $bonus) {
+                        $user->live_balance = Money::maxZero(
+                            Money::subtract($user->live_balance, $bonus->amount)
+                        );
+                        $bonus->update([
+                            'status' => 'rejected',
+                            'notes' => $bonus->notes . ' Reversed: deposit #' . $lockedTransaction->id . ' was rejected.',
+                        ]);
+                    }
+                    $user->save();
+                }
+            }
+
             $lockedTransaction->update([
                 'status' => 'rejected',
                 'notes'  => $reason,
@@ -270,6 +301,45 @@ class AdminTransactionController extends Controller
                 $user = User::whereKey($lockedTransaction->user_id)->lockForUpdate()->firstOrFail();
                 $user->live_balance = Money::add($user->live_balance, $lockedTransaction->amount);
                 $user->save();
+
+                // P0-3 (2026-11-18): credit the promo bonus here, only
+                // now that the deposit itself is approved. The promo was
+                // stored on the deposit row at submission time (migration
+                // 2026_11_18_000014) and nothing was credited while it
+                // was pending, so a rejected deposit never mints a bonus
+                // and a bonus can never be withdrawn before approval.
+                // Idempotent: if a bonus row for this deposit already
+                // exists (e.g. credited under the old immediate-credit
+                // behaviour, or a double approve attempt), it is not
+                // credited again.
+                $promoBonus = Schema::hasColumn('transactions', 'promo_bonus_amount')
+                    ? (float) ($lockedTransaction->promo_bonus_amount ?? 0)
+                    : 0.0;
+                $promoCode = Schema::hasColumn('transactions', 'promo_code')
+                    ? (string) ($lockedTransaction->promo_code ?? '')
+                    : '';
+                if ($promoBonus > 0) {
+                    $alreadyCredited = Transaction::where('user_id', $lockedTransaction->user_id)
+                        ->where('type', 'bonus')
+                        ->where('status', 'approved')
+                        ->where('notes', 'like', '%for deposit #' . $lockedTransaction->id . '%')
+                        ->exists();
+                    if (!$alreadyCredited) {
+                        $user->live_balance = Money::add($user->live_balance, $promoBonus);
+                        $user->save();
+
+                        Transaction::create([
+                            'user_id' => $lockedTransaction->user_id,
+                            'account_type' => 'live',
+                            'type' => 'bonus',
+                            'amount' => $promoBonus,
+                            'method' => $promoCode !== '' ? 'Promo code ' . $promoCode : 'Promo bonus',
+                            'status' => 'approved',
+                            'processed_at' => now(),
+                            'notes' => 'Promo bonus ' . $promoCode . ' for deposit #' . $lockedTransaction->id . ' of $' . number_format((float) $lockedTransaction->amount, 2) . '.',
+                        ]);
+                    }
+                }
             }
 
             $lockedTransaction->update([
